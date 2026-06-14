@@ -1,0 +1,106 @@
+#!/usr/bin/env php
+<?php
+
+/**
+ * Imports a stamparm/ipsum snapshot into resources/bad-ips.data.
+ *
+ * Usage:
+ *   bin/badip-import [--level=3] [--source=/path/to/levels.txt] [--dest=resources]
+ *
+ * Levels are stamparm/ipsum confidence tiers: a higher level lists only IPs seen
+ * on more source blacklists, reducing false positives. Default is level 3.
+ * With --source a local feed file is used instead of downloading.
+ */
+
+declare(strict_types=1);
+
+use Flowd\PhirewallPresetBadIps\FeedSource;
+use Flowd\PhirewallPresetBadIps\Importer;
+
+error_reporting(E_ALL);
+ini_set('display_errors', '1');
+
+foreach ([__DIR__ . '/../vendor/autoload.php', __DIR__ . '/../../../autoload.php'] as $autoloadFile) {
+    if (is_file($autoloadFile)) {
+        require $autoloadFile;
+        break;
+    }
+}
+
+if (!class_exists(Importer::class)) {
+    fwrite(STDERR, "Autoloader not found. Run \"composer install\" first.\n");
+    exit(1);
+}
+
+/**
+ * @param list<string> $argv
+ * @return array{level: string, source: ?string, dest: string}
+ */
+function parseArguments(array $argv): array
+{
+    $options = ['level' => '3', 'source' => null, 'dest' => dirname(__DIR__) . '/resources'];
+    foreach (array_slice($argv, 1) as $argument) {
+        if (preg_match('/^--(level|source|dest)=(.+)$/', $argument, $matches) === 1) {
+            $options[$matches[1]] = $matches[2];
+            continue;
+        }
+
+        fwrite(STDERR, "Unknown argument: {$argument}\n");
+        fwrite(STDERR, "Usage: bin/badip-import [--level=3] [--source=/path/to/levels.txt] [--dest=resources]\n");
+        exit(1);
+    }
+
+    if (preg_match('/^[1-8]$/', $options['level']) !== 1) {
+        fwrite(STDERR, "Level must be a single digit 1-8.\n");
+        exit(1);
+    }
+
+    return $options;
+}
+
+function httpGet(string $url): string
+{
+    $context = stream_context_create([
+        'http' => [
+            'header' => "User-Agent: flowd-phirewall-preset-bad-ips-import\r\n",
+            'timeout' => 60,
+            'follow_location' => 1,
+        ],
+    ]);
+
+    $content = @file_get_contents($url, false, $context);
+    if ($content === false) {
+        throw new RuntimeException('HTTP request failed: ' . $url);
+    }
+
+    return $content;
+}
+
+$options = parseArguments($argv);
+$url = sprintf('https://raw.githubusercontent.com/stamparm/ipsum/master/levels/%s.txt', $options['level']);
+
+try {
+    if ($options['source'] !== null) {
+        $feedContent = @file_get_contents($options['source']);
+        if ($feedContent === false) {
+            throw new RuntimeException('Cannot read source file: ' . $options['source']);
+        }
+    } else {
+        echo "Downloading {$url}\n";
+        $feedContent = httpGet($url);
+    }
+
+    $source = new FeedSource(
+        name: 'stamparm/ipsum',
+        url: 'https://github.com/stamparm/ipsum',
+        level: $options['level'],
+        license: 'The Unlicense (public domain)',
+    );
+
+    $importReport = (new Importer())->import($feedContent, $source, $options['dest'], date('c'));
+} catch (Throwable $throwable) {
+    fwrite(STDERR, 'Import failed: ' . $throwable->getMessage() . "\n");
+    exit(1);
+}
+
+echo sprintf("Imported %d addresses from %s level %s into %s\n", $importReport->ipCount, $importReport->source->name, $importReport->source->level, $options['dest']);
