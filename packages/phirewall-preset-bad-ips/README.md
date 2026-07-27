@@ -2,7 +2,7 @@
 
 Block requests from known malicious IP addresses with [flowd/phirewall](https://github.com/flowd/phirewall).
 
-Ships a snapshot of the public-domain [stamparm/ipsum](https://github.com/stamparm/ipsum) threat feed and exposes it as a `PortableConfig` blocklist (a `ConfigLayer`), materialized with `Config::with()`.
+Ships a snapshot of the public-domain [stamparm/ipsum](https://github.com/stamparm/ipsum) threat feed and exposes it as a `ConfigLayer` blocklist for `Config::with()`. The snapshot loads lazily on the first evaluated request; the raw address list stays available through `BadIpList::load()`.
 
 ## Installation
 
@@ -23,6 +23,21 @@ $config = (new Config($cache))->with(Presets::blocklist());
 | --- | --- |
 | `Presets::blocklist()` | Blocks (403) requests whose client IP is in the bundled snapshot. |
 | `Presets::track(period)` | Counts matches without blocking, to measure false positives before enforcing. |
+
+### Skipping the per-request parse
+
+Parsing the snapshot and compiling ~18k addresses into lookup tables costs
+around 15 ms and, under PHP-FPM, would run on every request. Give your
+`Config` a compiled-data cache (phirewall `^0.9`) and both steps are served
+from OPcache-backed artifacts instead - re-parsed only when the data file
+changes:
+
+```php
+use Flowd\Phirewall\Support\CompiledDataCache;
+
+$config->setCompiledDataCache(new CompiledDataCache('/path/to/var/cache/phirewall'));
+$config = $config->with(Presets::blocklist());
+```
 
 ## The bundled list
 

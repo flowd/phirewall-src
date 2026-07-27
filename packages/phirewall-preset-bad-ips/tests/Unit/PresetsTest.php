@@ -47,9 +47,14 @@ final class PresetsTest extends TestCase
     public function testBlocklistRegistersTheNamedRule(): void
     {
         $dataFile = $this->dataFileWith("192.0.2.1\n");
-        $blocklistNames = array_column(Presets::blocklist($dataFile)->toArray()['blocklists'], 'name');
+        $config = (new Config(new InMemoryCache()))->with(Presets::blocklist($dataFile));
 
-        $this->assertContains(Presets::BLOCKLIST_RULE, $blocklistNames);
+        $ruleNames = array_map(
+            static fn(object $rule): string => $rule->name(),
+            $config->blocklists->rules(),
+        );
+
+        $this->assertContains(Presets::BLOCKLIST_RULE, $ruleNames);
     }
 
     public function testSnapshotImportedAtReadsTheManifest(): void
