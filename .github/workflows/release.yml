@@ -1,0 +1,93 @@
+name: Release
+
+# A release is a merged pull request from a release/X.Y.Z branch (created by bin/release).
+# Merging it tags the merge commit, publishes the packages to their mirrors and creates
+# the GitHub release.
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: Detect release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Listing the pull requests of a commit needs this, "contents: read" alone gets a 403.
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      version: ${{ steps.detect.outputs.version }}
+    steps:
+      - name: Find the release branch of the pushed commit
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ref="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" --jq '.[0].head.ref // ""')"
+          echo "Pull request head ref: '${ref}'"
+          if [[ "$ref" =~ ^release/([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "Not a release commit."
+            echo "version=" >> "$GITHUB_OUTPUT"
+          fi
+
+  tag:
+    name: Tag ${{ needs.detect.outputs.version }}
+    needs: detect
+    if: needs.detect.outputs.version != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create and push the tag
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" >/dev/null; then
+            echo "Tag ${VERSION} already exists." >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${VERSION}" -m "Release ${VERSION}" "${GITHUB_SHA}"
+          git push origin "refs/tags/${VERSION}"
+
+  split:
+    name: Publish ${{ needs.detect.outputs.version }}
+    needs: [detect, tag]
+    uses: ./.github/workflows/split.yml
+    with:
+      tag: ${{ needs.detect.outputs.version }}
+    secrets: inherit
+
+  github-release:
+    name: GitHub release ${{ needs.detect.outputs.version }}
+    needs: [detect, split]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          gh release create "${VERSION}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --verify-tag \
+            --title "${VERSION}" \
+            --generate-notes

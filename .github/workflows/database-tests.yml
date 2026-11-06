@@ -2,19 +2,23 @@ name: Database Tests
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
 
 permissions:
   contents: read
 
+concurrency:
+  group: database-tests-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   database-tests:
     name: PdoCache (SQLite + MySQL + PostgreSQL)
     runs-on: ubuntu-latest
-
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
       - name: Run database test suite
-        run: ./bin/test-databases.sh
+        run: packages/phirewall/bin/test-databases.sh

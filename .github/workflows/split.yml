@@ -1,0 +1,85 @@
+name: Split
+
+# Publishes the packages to their read-only mirror repositories (the ones Packagist
+# watches). Called by release.yml: the mirrors only receive release tags.
+#
+# It can also be started by hand, but only as a rehearsal against the test repositories
+# flowd/phirewall-test-1 to -4 (see the Releases section of the README). A manual run never touches the mirrors.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag, e.g. 0.11.0'
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to create in the test repositories, e.g. 0.0.1-test'
+        required: true
+        type: string
+      ref:
+        description: 'Branch, tag or commit of this repository to split'
+        required: true
+        default: main
+        type: string
+    secrets:
+      APP_ID:
+        required: true
+      APP_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  split:
+    name: Split ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: phirewall
+            test_repository: phirewall-test-1
+          - package: phirewall-preset-owasp-crs
+            test_repository: phirewall-test-2
+          - package: phirewall-preset-bots
+            test_repository: phirewall-test-3
+          - package: phirewall-preset-bad-ips
+            test_repository: phirewall-test-4
+    env:
+      # Called by release.yml: the mirror. Started by hand: the test repository.
+      MIRROR: ${{ github.event_name == 'workflow_dispatch' && matrix.test_repository || matrix.package }}
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || inputs.tag }}
+          fetch-depth: 0
+
+      # Short-lived token limited to the mirror of this matrix entry.
+      - name: Create a GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: flowd
+          repositories: ${{ env.MIRROR }}
+
+      - name: Split ${{ matrix.package }}
+        uses: danharrin/monorepo-split-github-action@14e42e2437f674b8987c1f50ca3689116aea1893 # v2.4.5
+        env:
+          # The action clones https://<value>@github.com/..., an App installation token
+          # only works as the password of the user x-access-token.
+          GITHUB_TOKEN: x-access-token:${{ steps.app-token.outputs.token }}
+        with:
+          package_directory: packages/${{ matrix.package }}
+          repository_organization: flowd
+          repository_name: ${{ env.MIRROR }}
+          branch: main
+          tag: ${{ inputs.tag }}
+          user_name: github-actions[bot]
+          user_email: 41898282+github-actions[bot]@users.noreply.github.com
