@@ -1,0 +1,22 @@
+services:
+  # Interactive shell + one-shot commands (install, nx build, lint, tokens:*).
+  # Started automatically by ./bin/ds when needed.
+  pnpm:
+    build:
+      context: docker/pnpm/
+      dockerfile: Dockerfile
+    working_dir: /workspace
+    command: pnpm dev --host 0.0.0.0
+    volumes:
+      - ./:/workspace:cached
+      - ./docker/pnpm/.bash_history:/root/.bash_history:cached
+      # Named volumes shadow the bind-mount on these paths so node_modules and
+      # the pnpm store stay inside Docker — keeps the host clean and avoids
+      # the macOS bind-mount perf hit on large dependency trees.
+      - node_modules:/workspace/node_modules
+      - pnpm_store:/workspace/.pnpm-store
+    ports:
+      - 127.0.0.1:5173:5173
+volumes:
+  node_modules:
+  pnpm_store:

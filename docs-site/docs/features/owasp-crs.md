@@ -762,6 +762,11 @@ Each CRS variable maps to a `VariableCollectorInterface` implementation:
 | `REQUEST_COOKIES` | `RequestCookiesCollector` | All cookie values |
 | `REQUEST_COOKIES_NAMES` | `RequestCookiesNamesCollector` | Cookie names |
 
+Each entry carries the member name it belongs to (parameter, cookie or header name)
+so selectors and exclusions can address it; unnamed variables use `name: null`.
+
+The set of supported variables is fixed: `VariableCollectorFactory` resolves these names and nothing else. A rule targeting any other variable collects no values, so that target never matches.
+
 ### Operator Evaluators
 
 Each CRS operator maps to an `OperatorEvaluatorInterface` implementation:
@@ -783,60 +788,6 @@ Catastrophic `@rx` backtracking (which can freeze the PHP process) is bounded by
 
 Earlier versions truncated an oversized value to an 8 KiB head and matched only that head. That left the 8 KiB head as the peak backtracking-cost point *and* let a payload evade by sitting past the head. The current fail-closed cap replaces that behavior, and its length is configurable - see [Per-Value Length Cap](#per-value-length-cap) for the trade-off between a tighter CPU bound and false-positive blocks on large legitimate values.
 :::
-
-### Adding Custom Operators
-
-Implement `OperatorEvaluatorInterface` and register it in `OperatorEvaluatorFactory`:
-
-```php
-namespace Flowd\PhirewallPresetOwaspCrs\Engine\Operator;
-
-final readonly class IpMatchEvaluator implements OperatorEvaluatorInterface
-{
-    /** @param list<string> $cidrs */
-    public function __construct(private array $cidrs) {}
-
-    /** @param list<string> $values */
-    public function evaluate(array $values): bool
-    {
-        foreach ($values as $value) {
-            // Check if $value falls within any CIDR range
-            if ($this->matchesCidr($value)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private function matchesCidr(string $ip): bool
-    {
-        // CIDR matching logic
-    }
-}
-```
-
-### Adding Custom Variables
-
-Implement `VariableCollectorInterface` and register it in `VariableCollectorFactory`:
-
-```php
-namespace Flowd\PhirewallPresetOwaspCrs\Engine\Variable;
-
-use Psr\Http\Message\ServerRequestInterface;
-
-final readonly class RequestBodyCollector implements VariableCollectorInterface
-{
-    /** @return list<array{name: ?string, value: string}> */
-    public function collect(ServerRequestInterface $serverRequest): array
-    {
-        $body = (string) $serverRequest->getBody();
-        return $body !== '' ? [['name' => null, 'value' => $body]] : [];
-    }
-}
-```
-
-Each entry carries the member name it belongs to (parameter, cookie or header name)
-so selectors and exclusions can address it; unnamed variables use `name: null`.
 
 ## Performance
 

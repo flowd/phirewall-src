@@ -42,9 +42,44 @@ Resolve any preset by name with `Presets::get($name)` (a `PortableConfig`), pass
 ## Conventions and overrides
 
 - The shipped presets target signals that are universal across applications (scanner User-Agents, missing browser headers, well-known sensitive paths), so they assume nothing about your routing. A preset you build yourself is a `PortableConfig`, so it can key on whatever fits your environment, including routes your own apps standardize.
-- Override any rule by applying the preset with your own portable rules that redefine the rule by the same name (later layer wins), or by rebuilding the preset's schema.
+- Adapt a preset with the narrowest tool that fits: its own parameters first, the `configure:` closure where one exists, and only then an override by name. The table below names the knob per preset.
 
-> **Note:** `scannerBlocking()`'s `suspicious-headers` rule is the more aggressive of the two: some legitimate API clients, privacy tools, and embedded browsers also omit `Accept-*` headers. Drop or override it by name if your traffic includes non-browser clients.
+### Choosing the knob
+
+**1. Preset parameters.** Most presets take the values you are likely to change - a throttle's `limit`/`period`, a data file, a paranoia level. A parameterized preset stays a preset: it keeps receiving upstream updates.
+
+**2. The `configure:` closure (OWASP CRS).** Both CRS presets hand you the `CoreRuleSetMatcher` before the first request, which is where CRS tuning belongs - `disable($ruleId)`, `excludeTarget*()`, `applyRuleExclusions()`, `addManipulator()`. See [Tuning False Positives](/features/owasp-crs#tuning-false-positives).
+
+**3. Override by name.** A later layer that defines a rule with the same name replaces it (see [Composition](/advanced/config-composition#merge-semantics)).
+
+This is for rules that are **not yours to edit**: a vendor baseline, a signed `PortableConfig` loaded from a store, another tenant's layer. There you cannot change the call that created the rule, so a later same-named rule is the only hedge - and since no section offers a `removeRule()`, neutralizing an unwanted rule means overriding it with one that never matches.
+
+In a config you assemble yourself you rarely need any of this: do not apply the preset you do not want. The one wrinkle is `scannerBlocking()`, the only shipped preset that bundles more than one rule. If you want just its scanner-UA half, wire that half directly rather than applying the bundle and overriding the other rule:
+
+```php
+// Instead of Presets::scannerBlocking() plus an override of suspicious-headers:
+$config->blocklists->knownScanners('preset.scanner.known-tools');
+```
+
+That keeps the curated default pattern list and adds no second layer.
+
+| Preset | Rule name | Tune it with |
+|--------|-----------|--------------|
+| `Presets::scannerBlocking()` | `preset.scanner.known-tools`, `preset.scanner.suspicious-headers` | No parameters. Override by name, or hand-wire `blocklists->knownScanners()` / `suspiciousHeaders()` with your own pattern list. |
+| `Presets::sensitivePathBlocking()` | `preset.sensitive-path.probes` | No parameters. Override by name to add or drop path patterns. |
+| CRS `Presets::blocklist()` | `Presets::BLOCKLIST_RULE_NAME` | `paranoiaLevel:`, `anomalyThreshold:`, `logger:`, `configure:`. An override discards the whole engine - almost never what you want. |
+| CRS `Presets::fail2ban()` | `Presets::FAIL2BAN_RULE_NAME` | The same, plus `threshold:`, `period:`, `ban:`. |
+| Bad-IPs `Presets::blocklist()` | `Presets::BLOCKLIST_RULE` | `dataFile:` for your own snapshot. |
+| Bad-IPs `Presets::track()` | `Presets::TRACK_RULE` | `period:`, `dataFile:`. |
+| Bots `Presets::blockAiCrawlers()` | `Presets::AI_BLOCK_RULE` | No parameters. Override by name to narrow or widen the crawler list. |
+| Bots `Presets::throttleAiCrawlers()` | `Presets::AI_THROTTLE_RULE` | `limit:`, `period:`. Both throttles key on the client IP through the evaluating `Config`'s resolver, so behind a proxy set a [`TrustedProxyResolver`](/features/safelists-blocklists#ip-resolution) on the `Config` rather than overriding the rule. |
+| Bots `Presets::throttleSeoCrawlers()` | `Presets::SEO_THROTTLE_RULE` | `limit:`, `period:`. |
+
+::: warning An override is a replacement, not a patch
+The later rule wins whole: you rebuild it and own it from then on. Upstream changes to that rule - new AI-crawler tokens, new scanner patterns, a re-imported CRS snapshot - no longer reach your deployment, silently and without an error. Prefer a parameter or `configure:` wherever one exists, and where you do override, say in a comment which knob was missing.
+:::
+
+> **Note:** `scannerBlocking()`'s `suspicious-headers` rule is the more aggressive of the two: some legitimate API clients, privacy tools, and embedded browsers also omit `Accept-*` headers. If your traffic includes non-browser clients, wire `knownScanners()` alone instead of applying the bundle - or, when the bundle comes from a layer you do not own, override `preset.scanner.suspicious-headers` by name.
 
 ## Versioning and update checks
 

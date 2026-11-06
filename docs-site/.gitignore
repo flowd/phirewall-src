@@ -4,3 +4,5 @@ docs/.vitepress/cache
 /.claude
 /.idea
 .DS_Store
+.pnpm-store
+docker/pnpm/.bash_history
