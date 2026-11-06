@@ -1,0 +1,263 @@
+#!/usr/bin/env bash
+#
+# Prepare a release of all packages and open the release pull request.
+#
+# All packages share one version and one git tag (e.g. 0.11.0). This script does not tag
+# anything itself: it prepares the release on a release/<version> branch and opens a pull
+# request. Merging that pull request into main triggers .github/workflows/release.yml,
+# which tags the merge commit, publishes the mirrors and creates the GitHub release.
+#
+# Usage:
+#   bin/release <patch|minor|major|X.Y.Z> [--dry-run] [--no-push]
+#
+#   patch|minor|major  bump the last shared tag (not available before the first release;
+#                      "major" is refused below 1.0.0, pass the version explicitly)
+#   X.Y.Z              release exactly this version
+#   --dry-run          only report what would happen, change nothing
+#   --no-push          create the branch and the commit, but neither push nor open the PR
+#
+# What a release changes:
+#   - the core constraint of every package that requires another package of this repo
+#     (">=X.Y <UPPER", UPPER being 1.0 below 1.0.0, the next major afterwards)
+#   - the dev-main branch alias of all packages (next minor, e.g. 0.12.x-dev)
+#   - "## Unreleased" in a CHANGELOG.md becomes "## X.Y.Z - <date>"
+#   - the root composer.json, regenerated with bin/monorepo-merge
+#
+# The per-package diff since the last tag is informational only: all packages are released
+# together, so an unchanged package still gets the new tag.
+#
+# Requirements: git, jq, composer (vendor/ installed) and gh (not for --dry-run/--no-push).
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+# --- helpers -----------------------------------------------------------------------------
+
+die() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+info() {
+    echo "==> $*"
+}
+
+usage() {
+    sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
+}
+
+# Prints 1 when version $1 is lower than version $2 (both X.Y.Z), otherwise 0.
+version_lt() {
+    local IFS=.
+    local a=($1) b=($2) i
+    for i in 0 1 2; do
+        if (( ${a[i]} < ${b[i]} )); then echo 1; return; fi
+        if (( ${a[i]} > ${b[i]} )); then echo 0; return; fi
+    done
+    echo 0
+}
+
+# --- arguments ---------------------------------------------------------------------------
+
+BUMP=""
+DRY_RUN=0
+PUSH=1
+
+for arg in "$@"; do
+    case "$arg" in
+        -h|--help) usage; exit 0 ;;
+        --dry-run) DRY_RUN=1 ;;
+        --no-push) PUSH=0 ;;
+        -*) die "unknown option: $arg (see --help)" ;;
+        *)
+            [[ -z "$BUMP" ]] || die "only one version argument is allowed"
+            BUMP="$arg"
+            ;;
+    esac
+done
+
+[[ -n "$BUMP" ]] || { usage; exit 1; }
+
+# --- preflight ---------------------------------------------------------------------------
+
+for cmd in git jq composer; do
+    command -v "$cmd" >/dev/null || die "$cmd is required"
+done
+[[ -x vendor/bin/monorepo-builder ]] || die "vendor/ is missing, run: composer install"
+if (( ! DRY_RUN && PUSH )); then
+    command -v gh >/dev/null || die "gh is required to open the pull request (or use --no-push)"
+fi
+
+# Problems that block a real release only warn in a dry run, so the report stays usable
+# from a feature branch.
+problem() {
+    if (( DRY_RUN )); then
+        echo "warning: $* (would abort a real release)" >&2
+    else
+        die "$*"
+    fi
+}
+
+branch="$(git rev-parse --abbrev-ref HEAD)"
+[[ "$branch" == "main" ]] || problem "releases are made from main, you are on '$branch'"
+
+[[ -z "$(git status --porcelain)" ]] || problem "the working tree is not clean"
+
+git fetch --quiet origin main --tags || problem "could not fetch origin"
+if git rev-parse --verify --quiet origin/main >/dev/null; then
+    [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] \
+        || problem "main is not in sync with origin/main"
+fi
+
+# --- versions ----------------------------------------------------------------------------
+
+# Only shared tags (X.Y.Z). The imported history tags carry a package prefix (core/0.10.0).
+LAST_TAG="$(git tag --list '[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)"
+
+if [[ "$BUMP" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    VERSION="$BUMP"
+else
+    [[ "$BUMP" =~ ^(patch|minor|major)$ ]] || die "'$BUMP' is neither patch, minor, major nor X.Y.Z"
+    [[ -n "$LAST_TAG" ]] || die "there is no shared tag yet, pass the first version explicitly (e.g. 0.11.0)"
+
+    IFS=. read -r last_major last_minor last_patch <<< "$LAST_TAG"
+    case "$BUMP" in
+        patch) VERSION="${last_major}.${last_minor}.$((last_patch + 1))" ;;
+        minor) VERSION="${last_major}.$((last_minor + 1)).0" ;;
+        major)
+            (( last_major >= 1 )) \
+                || die "refusing 'major' below 1.0.0: the extension constraints end at <1.0, pass 1.0.0 explicitly"
+            VERSION="$((last_major + 1)).0.0"
+            ;;
+    esac
+fi
+
+if [[ -n "$LAST_TAG" && "$(version_lt "$VERSION" "$LAST_TAG")" == "1" ]]; then
+    die "$VERSION is lower than the last release $LAST_TAG"
+fi
+[[ "$VERSION" != "$LAST_TAG" ]] || die "$VERSION is already released"
+git rev-parse --verify --quiet "refs/tags/$VERSION" >/dev/null && die "tag $VERSION already exists locally"
+if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null 2>&1; then
+    die "tag $VERSION already exists on origin"
+fi
+
+IFS=. read -r major minor _patch <<< "$VERSION"
+if (( major == 0 )); then
+    UPPER_BOUND="1.0"
+else
+    UPPER_BOUND="$((major + 1)).0"
+fi
+CONSTRAINT=">=${major}.${minor} <${UPPER_BOUND}"
+NEXT_ALIAS="${major}.$((minor + 1)).x-dev"
+RELEASE_BRANCH="release/${VERSION}"
+
+git rev-parse --verify --quiet "refs/heads/${RELEASE_BRANCH}" >/dev/null \
+    && die "branch ${RELEASE_BRANCH} already exists locally"
+
+# --- what changed since the last release -------------------------------------------------
+
+info "Last release: ${LAST_TAG:-none}"
+info "New release:  ${VERSION}"
+echo
+
+REPORT=""
+printf '%-34s %s\n' "Package" "Changes since ${LAST_TAG:-the beginning}"
+for dir in packages/*/; do
+    name="$(jq -r '.name' "${dir}composer.json")"
+    if [[ -z "$LAST_TAG" ]]; then
+        status="first release"
+    elif git diff --quiet "$LAST_TAG" HEAD -- "$dir"; then
+        status="unchanged"
+    else
+        commits="$(git rev-list --count "$LAST_TAG"..HEAD -- "$dir")"
+        status="changed (${commits} commits)"
+    fi
+    printf '%-34s %s\n' "$name" "$status"
+    REPORT="${REPORT}| \`${name}\` | ${status} |"$'\n'
+done
+echo
+
+info "Constraint between the packages: ${CONSTRAINT}"
+info "Branch alias of dev-main after the release: ${NEXT_ALIAS}"
+info "Release branch: ${RELEASE_BRANCH}"
+
+if (( DRY_RUN )); then
+    echo
+    info "Dry run, nothing was changed."
+    exit 0
+fi
+
+# --- prepare the release -----------------------------------------------------------------
+
+echo
+git switch --quiet -c "$RELEASE_BRANCH"
+
+# Constraints between the packages (flowd/phirewall in the extensions).
+vendor/bin/monorepo-builder bump-interdependency "$CONSTRAINT" >/dev/null
+
+# Branch alias of every package. The root alias is copied over by bin/monorepo-merge.
+for file in packages/*/composer.json; do
+    tmp="$(mktemp)"
+    jq --arg alias "$NEXT_ALIAS" '.extra["branch-alias"]["dev-main"] = $alias' "$file" > "$tmp"
+    mv "$tmp" "$file"
+done
+
+# Changelogs: "## Unreleased" becomes "## X.Y.Z - date". Packages without that heading
+# are reported, their changelog is maintained by hand.
+today="$(date +%F)"
+for changelog in packages/*/CHANGELOG.md; do
+    [[ -f "$changelog" ]] || continue
+    if grep -q '^## Unreleased[[:space:]]*$' "$changelog"; then
+        tmp="$(mktemp)"
+        sed "s/^## Unreleased[[:space:]]*\$/## ${VERSION} - ${today}/" "$changelog" > "$tmp"
+        mv "$tmp" "$changelog"
+        echo "Changelog: ${changelog} -> ${VERSION}"
+    else
+        echo "Changelog: ${changelog} has no '## Unreleased' section, left untouched"
+    fi
+done
+
+# Regenerate the root composer.json and make sure all packages agree.
+bin/monorepo-merge >/dev/null
+vendor/bin/monorepo-builder validate >/dev/null
+
+git add composer.json packages/*/composer.json packages/*/CHANGELOG.md
+if git diff --cached --quiet; then
+    # Possible for a patch release right after a minor one: nothing to rewrite.
+    git commit --quiet --allow-empty -m "Prepare release ${VERSION}"
+else
+    git commit --quiet -m "Prepare release ${VERSION}"
+fi
+info "Committed 'Prepare release ${VERSION}' on ${RELEASE_BRANCH}"
+
+if (( ! PUSH )); then
+    echo
+    info "Not pushed (--no-push). Push ${RELEASE_BRANCH} and open the pull request yourself."
+    exit 0
+fi
+
+git push --quiet --set-upstream origin "$RELEASE_BRANCH"
+
+body="$(mktemp)"
+cat > "$body" <<EOF
+Release \`${VERSION}\` of all packages${LAST_TAG:+ (previous release: \`${LAST_TAG}\`)}.
+
+| Package | Changes since ${LAST_TAG:-the beginning} |
+| --- | --- |
+${REPORT}
+All packages are tagged together, an unchanged package still gets \`${VERSION}\`.
+
+- Constraint between the packages: \`${CONSTRAINT}\`
+- Branch alias of \`dev-main\` afterwards: \`${NEXT_ALIAS}\`
+
+Merging this pull request tags the merge commit \`${VERSION}\`, publishes the mirror
+repositories and creates the GitHub release.
+EOF
+
+gh pr create --base main --head "$RELEASE_BRANCH" --title "Release ${VERSION}" --body-file "$body"
+rm -f "$body"
+
+echo
+info "Release pull request opened. Merging it publishes ${VERSION}."
