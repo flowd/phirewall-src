@@ -83,3 +83,25 @@ jobs:
           tag: ${{ inputs.tag }}
           user_name: github-actions[bot]
           user_email: 41898282+github-actions[bot]@users.noreply.github.com
+
+      # The mirror gets a release for the tag as well, not only the tag. The notes are the
+      # section of the package CHANGELOG.md, with a link to the release in this repository.
+      - name: Create the release in the mirror
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ inputs.tag }}
+          PACKAGE: ${{ matrix.package }}
+        run: |
+          if gh release view "${TAG}" --repo "flowd/${MIRROR}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists in ${MIRROR}."
+            exit 0
+          fi
+          notes="$(awk -v tag="${TAG}" '
+            /^## / { if (found) exit; if (index($0, "## " tag) == 1) { found = 1; next } }
+            found { print }
+          ' "packages/${PACKAGE}/CHANGELOG.md" 2>/dev/null || true)"
+          {
+            [[ -z "${notes//[[:space:]]/}" ]] || printf '%s\n\n' "${notes}"
+            echo "Released together with the other Phirewall packages, see the [release in flowd/phirewall-src](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}). This repository is a read-only mirror."
+          } > "${RUNNER_TEMP}/notes.md"
+          gh release create "${TAG}" --repo "flowd/${MIRROR}" --verify-tag --title "${TAG}" --notes-file "${RUNNER_TEMP}/notes.md"
