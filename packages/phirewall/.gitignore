@@ -1,0 +1,12 @@
+.build/
+.vscode/
+.idea/
+.junie/
+/vendor/
+
+.php-cs-fixer.cache
+.phpunit.result.cache
+composer.lock
+.aiignore
+TODO.md
+.DS_Store

@@ -1,0 +1,132 @@
+# Phirewall Examples
+
+This directory contains executable examples demonstrating various features of Phirewall.
+
+## Running Examples
+
+All examples can be run from the project root:
+
+```bash
+php examples/01-basic-setup.php
+```
+
+## Example Index
+
+### Getting Started
+
+| Example | Description |
+|---------|-------------|
+| [01-basic-setup.php](01-basic-setup.php) | Minimal configuration with safelist, blocklist, and throttle |
+| [26-psr17-factories.php](26-psr17-factories.php) | PSR-17 response/stream factories for native 403/429 responses |
+
+### Attack Protection
+
+| Example | Description |
+|---------|-------------|
+| [02-brute-force-protection.php](02-brute-force-protection.php) | Fail2Ban and throttling for login protection |
+| [03-api-rate-limiting.php](03-api-rate-limiting.php) | Tiered rate limiting for APIs |
+| [06-bot-detection.php](06-bot-detection.php) | Scanner and malicious bot blocking |
+| [07-ip-blocklist.php](07-ip-blocklist.php) | File-backed IP/CIDR/path blocklists |
+| [08-comprehensive-protection.php](08-comprehensive-protection.php) | Production-ready multi-layer protection |
+| [27-request-context.php](27-request-context.php) | RequestContext API for post-handler fail2ban signaling |
+
+### Observability
+
+| Example | Description |
+|---------|-------------|
+| [09-observability-monolog.php](09-observability-monolog.php) | Event logging with Monolog |
+| [10-observability-opentelemetry.php](10-observability-opentelemetry.php) | Distributed tracing with OpenTelemetry |
+
+### Storage Backends
+
+| Example | Description |
+|---------|-------------|
+| [11-redis-storage.php](11-redis-storage.php) | Redis backend for multi-server deployments |
+| [13-benchmarks.php](13-benchmarks.php) | Performance comparison of storage backends |
+
+### Infrastructure
+
+| Example | Description                                                                     |
+|---------|---------------------------------------------------------------------------------|
+| [12-apache-htaccess.php](12-apache-htaccess.php) | Apache .htaccess IP blocking integration                                        |
+| [15-in-memory-pattern-backend.php](15-in-memory-pattern-backend.php) | Configuration-based blocklists without file I/O                                 |
+
+### Advanced Features
+
+| Example | Description |
+|---------|-------------|
+| [16-allow2ban.php](16-allow2ban.php) | Hard volume cap with auto-ban |
+| [17-known-scanners.php](17-known-scanners.php) | Block known attack tools and vulnerability scanners |
+| [18-trusted-bots.php](18-trusted-bots.php) | Trusted bot verification via reverse DNS |
+| [19-header-analysis.php](19-header-analysis.php) | Suspicious headers detection |
+| [20-rule-benchmarks.php](20-rule-benchmarks.php) | Firewall rule performance benchmarks |
+| [21-sliding-window.php](21-sliding-window.php) | Sliding window rate limiting |
+| [22-multi-throttle.php](22-multi-throttle.php) | Multi-window burst + sustained rate limiting |
+| [23-dynamic-limits.php](23-dynamic-limits.php) | Role-based dynamic throttle limits |
+| [24-pdo-storage.php](24-pdo-storage.php) | PdoCache with SQLite, MySQL, PostgreSQL |
+| [25-track-threshold.php](25-track-threshold.php) | Track with optional threshold and thresholdReached flag |
+| [28-portable-config-signing.php](28-portable-config-signing.php) | Signed PortableConfig transport (HMAC-SHA256) with tamper detection |
+| [29-portable-config.php](29-portable-config.php) | PortableConfig as data: round-trip, signing, and database hot-reload |
+| [30-config-composition.php](30-config-composition.php) | Layer vendor + environment + tenant + deployment Configs into one effective Config |
+| [31-presets.php](31-presets.php) | Ready-to-use rule bundles (scanner & sensitive-path blocking): standalone use, portable inspection, composition with override-by-name, and the `Presets::VERSION` update check |
+| [32-compiled-data-cache.php](32-compiled-data-cache.php) | Skip re-parsing expensive preset data: per-process memoization, OPcache-served compiled artifact, and mtime-driven rebuilds |
+
+## Optional Dependencies
+
+Some examples require optional dependencies:
+
+```bash
+# For Redis examples
+composer require predis/predis
+
+# For Monolog examples
+composer require monolog/monolog
+
+# For OpenTelemetry examples
+composer require open-telemetry/sdk
+```
+
+## Quick Start
+
+1. **Basic protection** - Start with `01-basic-setup.php` to understand the fundamentals.
+
+2. **API protection** - Use `03-api-rate-limiting.php` as a template for API rate limiting.
+
+3. **Full protection** - Use `08-comprehensive-protection.php` as a starting point for production deployments.
+
+## Example Output
+
+Each example produces formatted output showing:
+- Configuration steps
+- Request simulation results
+- Diagnostics and statistics
+
+Example output from `01-basic-setup.php`:
+
+```
+=== Phirewall Basic Setup Example ===
+
+1. Cache backend created (InMemoryCache)
+2. Configuration created with prefix 'demo'
+3a. Safelist rule added: health endpoint
+3b. Blocklist rule added: repository leak probes
+3c. Throttle rule added: 5 requests/minute per IP
+4. Middleware created
+
+=== Request Simulation ===
+
+Test 1: Health check endpoint (safelisted)
+  GET /health                              => 200
+    X-Phirewall-Safelist: health
+
+Test 2: Repository leak probe (blocklisted)
+  GET /.git/config                         => 403
+    X-Phirewall: blocklist
+    X-Phirewall-Matched: repo-probe
+
+...
+```
+
+## Documentation
+
+For complete documentation, see the [docs/](../docs/) directory.

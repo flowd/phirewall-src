@@ -1,0 +1,372 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Flowd\Phirewall\Tests\Pattern;
+
+use Flowd\Phirewall\Config;
+use Flowd\Phirewall\Http\Firewall;
+use Flowd\Phirewall\Http\Outcome;
+use Flowd\Phirewall\Pattern\FilePatternBackend;
+use Flowd\Phirewall\Pattern\InMemoryPatternBackend;
+use Flowd\Phirewall\Pattern\PatternEntry;
+use Flowd\Phirewall\Pattern\PatternKind;
+use Flowd\Phirewall\Pattern\SnapshotBlocklistMatcher;
+use Flowd\Phirewall\Store\InMemoryCache;
+use Nyholm\Psr7\ServerRequest;
+use org\bovigo\vfs\vfsStream;
+use PHPUnit\Framework\TestCase;
+use Psr\Http\Message\ServerRequestInterface;
+
+final class SnapshotBlocklistMatcherTest extends TestCase
+{
+    public function testMatchesIpCidrAndPathAndHeaderRegex(): void
+    {
+        $file = tempnam(sys_get_temp_dir(), 'phirewall-pattern-');
+        $this->assertIsString($file);
+        @unlink($file);
+
+        $filePatternBackend = new FilePatternBackend($file, now: static fn(): int => 1_700_000_000);
+        $filePatternBackend->append(new PatternEntry(PatternKind::IP, '203.0.113.10'));
+        $filePatternBackend->append(new PatternEntry(PatternKind::CIDR, '198.51.100.0/24'));
+        $filePatternBackend->append(new PatternEntry(PatternKind::PATH_PREFIX, '/secret'));
+        $filePatternBackend->append(new PatternEntry(PatternKind::HEADER_REGEX, '/curl|bot/i', target: 'User-Agent'));
+
+        $snapshotBlocklistMatcher = new SnapshotBlocklistMatcher($filePatternBackend);
+
+        $ipRequest = new ServerRequest('GET', '/any', [], null, '1.1', ['REMOTE_ADDR' => '203.0.113.10']);
+        $this->assertTrue($snapshotBlocklistMatcher->match($ipRequest)->isMatch(), 'Exact IP should match');
+
+        $cidrRequest = new ServerRequest('GET', '/any', [], null, '1.1', ['REMOTE_ADDR' => '198.51.100.77']);
+        $this->assertTrue($snapshotBlocklistMatcher->match($cidrRequest)->isMatch(), 'CIDR should match');
+
+        $pathRequest = new ServerRequest('GET', '/secret/data', [], null, '1.1', ['REMOTE_ADDR' => '203.0.113.5']);
+        $this->assertTrue($snapshotBlocklistMatcher->match($pathRequest)->isMatch(), 'Path prefix should match');
+
+        $headerRequest = (new ServerRequest('GET', '/any', ['User-Agent' => 'curl/8.0.0'], null, '1.1', ['REMOTE_ADDR' => '203.0.113.5']));
+        $this->assertTrue($snapshotBlocklistMatcher->match($headerRequest)->isMatch(), 'Header regex should match');
+
+        @unlink($file);
+    }
+
+    public function testSkipsExpiredAndIgnoresInvalidRegex(): void
+    {
+        $file = tempnam(sys_get_temp_dir(), 'phirewall-pattern-');
+        $this->assertIsString($file);
+        @unlink($file);
+
+        $now = 1_700_000_000;
+        $backend = new FilePatternBackend($file, now: static fn(): int => $now);
+        $backend->append(new PatternEntry(PatternKind::IP, '203.0.113.20', expiresAt: $now + 5));
+        $backend->append(new PatternEntry(PatternKind::REQUEST_REGEX, '/[invalid/', addedAt: $now)); // compile fails
+
+        $matcher = new SnapshotBlocklistMatcher($backend);
+
+        $request = new ServerRequest('GET', '/any', [], null, '1.1', ['REMOTE_ADDR' => '203.0.113.20']);
+        $this->assertTrue($matcher->match($request)->isMatch(), 'Should match before expiry');
+
+        $now = 1_700_000_006; // advance past expiry
+        $backend = new FilePatternBackend($file, now: static fn(): int => $now); // reload backend with same file
+        $matcher = new SnapshotBlocklistMatcher($backend);
+
+        $this->assertFalse($matcher->match($request)->isMatch(), 'Expired entry should be ignored');
+
+        // Ensure invalid regex pattern does not throw and does not match
+        $headerRequest = new ServerRequest('GET', '/any', ['X-Test' => 'value'], null, '1.1', ['REMOTE_ADDR' => '198.51.100.10']);
+        $this->assertFalse($matcher->match($headerRequest)->isMatch());
+
+        @unlink($file);
+    }
+
+    public function testIpv4MappedIpv6PeerMatchesIpv4EntryAndCidr(): void
+    {
+        $inMemoryPatternBackend = new InMemoryPatternBackend([
+            new PatternEntry(PatternKind::IP, '203.0.113.10'),
+            new PatternEntry(PatternKind::CIDR, '198.51.100.0/24'),
+        ]);
+
+        $snapshotBlocklistMatcher = new SnapshotBlocklistMatcher($inMemoryPatternBackend);
+
+        // A dual-stack host presents an IPv4 client as ::ffff:x.x.x.x; it must
+        // still match IPv4 entries.
+        $exactRequest = new ServerRequest('GET', '/any', [], null, '1.1', ['REMOTE_ADDR' => '::ffff:203.0.113.10']);
+        $this->assertTrue($snapshotBlocklistMatcher->match($exactRequest)->isMatch(), 'Mapped peer should match IPv4 exact entry');
+
+        $cidrRequest = new ServerRequest('GET', '/any', [], null, '1.1', ['REMOTE_ADDR' => '::ffff:198.51.100.77']);
+        $this->assertTrue($snapshotBlocklistMatcher->match($cidrRequest)->isMatch(), 'Mapped peer should match IPv4 CIDR entry');
+
+        $miss = new ServerRequest('GET', '/any', [], null, '1.1', ['REMOTE_ADDR' => '::ffff:8.8.8.8']);
+        $this->assertFalse($snapshotBlocklistMatcher->match($miss)->isMatch());
+    }
+
+    /**
+     * HEADER_EXACT resolves the target via PSR-7 getHeader(), which is
+     * case-insensitive on the header name. Matching must hold regardless of the
+     * casing used on either side of the lookup.
+     */
+    public function testHeaderExactMatchesCaseInsensitiveHeaderName(): void
+    {
+        $inMemoryPatternBackend = new InMemoryPatternBackend([
+            new PatternEntry(PatternKind::HEADER_EXACT, 'bad-bot', target: 'User-Agent'),
+        ]);
+
+        $snapshotBlocklistMatcher = new SnapshotBlocklistMatcher($inMemoryPatternBackend);
+
+        $matchRequest = new ServerRequest('GET', '/any', ['user-agent' => 'bad-bot'], null, '1.1', ['REMOTE_ADDR' => '1.2.3.4']);
+        $this->assertTrue($snapshotBlocklistMatcher->match($matchRequest)->isMatch(), 'Header name lookup must be case-insensitive');
+
+        $missValue = new ServerRequest('GET', '/any', ['User-Agent' => 'good-bot'], null, '1.1', ['REMOTE_ADDR' => '1.2.3.4']);
+        $this->assertFalse($snapshotBlocklistMatcher->match($missValue)->isMatch(), 'A differing value must not match');
+
+        $missHeaderAbsent = new ServerRequest('GET', '/any', [], null, '1.1', ['REMOTE_ADDR' => '1.2.3.4']);
+        $this->assertFalse($snapshotBlocklistMatcher->match($missHeaderAbsent)->isMatch(), 'An absent header must not match');
+    }
+
+    /**
+     * HEADER_REGEX likewise resolves the target via getHeader(); confirm the
+     * regex still matches a header supplied under different casing.
+     */
+    public function testHeaderRegexMatchesCaseInsensitiveHeaderName(): void
+    {
+        $inMemoryPatternBackend = new InMemoryPatternBackend([
+            new PatternEntry(PatternKind::HEADER_REGEX, '/curl|bot/i', target: 'User-Agent'),
+        ]);
+
+        $snapshotBlocklistMatcher = new SnapshotBlocklistMatcher($inMemoryPatternBackend);
+
+        $matchRequest = new ServerRequest('GET', '/any', ['USER-AGENT' => 'curl/8.0.0'], null, '1.1', ['REMOTE_ADDR' => '1.2.3.4']);
+        $this->assertTrue($snapshotBlocklistMatcher->match($matchRequest)->isMatch(), 'Header regex must match regardless of header-name casing');
+
+        $missRequest = new ServerRequest('GET', '/any', ['User-Agent' => 'Mozilla/5.0'], null, '1.1', ['REMOTE_ADDR' => '1.2.3.4']);
+        $this->assertFalse($snapshotBlocklistMatcher->match($missRequest)->isMatch());
+    }
+
+    public function testRequestRegexMatchesHeaderOnOwnLine(): void
+    {
+        $inMemoryPatternBackend = new InMemoryPatternBackend([
+            new PatternEntry(PatternKind::REQUEST_REGEX, '/^user-agent:.*evil/mi'),
+        ]);
+
+        $snapshotBlocklistMatcher = new SnapshotBlocklistMatcher($inMemoryPatternBackend);
+
+        $evilRequest = new ServerRequest('GET', '/page', ['User-Agent' => 'EvilBot/1.0'], null, '1.1', ['REMOTE_ADDR' => '1.2.3.4']);
+        $this->assertTrue($snapshotBlocklistMatcher->match($evilRequest)->isMatch(), 'REQUEST_REGEX with ^ anchor should match header on its own line');
+
+        $safeRequest = new ServerRequest('GET', '/page', ['User-Agent' => 'SafeBrowser/1.0'], null, '1.1', ['REMOTE_ADDR' => '1.2.3.4']);
+        $this->assertFalse($snapshotBlocklistMatcher->match($safeRequest)->isMatch());
+
+        $safeRequest = new ServerRequest('GET', '/page', ['User-Agent' => 'SafeBrowser/1.0', 'X-Custom' => 'evil'], null, '1.1', ['REMOTE_ADDR' => '1.2.3.4']);
+        $this->assertFalse($snapshotBlocklistMatcher->match($safeRequest)->isMatch());
+    }
+
+    /**
+     * A long-lived matcher over an unchanged file must stop matching an entry once
+     * its expiry passes. FilePatternBackend folds the earliest pending expiry into
+     * the snapshot version, so the matcher recompiles and drops the expired pattern
+     * even though the file's mtime never changes between requests.
+     */
+    public function testLongLivedMatcherDropsExpiredEntryOnUnchangedFile(): void
+    {
+        $root = vfsStream::setup('patterns', 0700);
+        $file = vfsStream::url('patterns/patterns.txt');
+
+        // kind|value|target|expiresAt|addedAt — IP entry expiring at 1_700_000_010.
+        file_put_contents($file, PatternKind::IP->value . "|203.0.113.20||1700000010|1700000000\n");
+        $root->getChild('patterns.txt')->lastModified(1_700_000_000);
+
+        $now = 1_700_000_000;
+        $backend = new FilePatternBackend($file, now: static function () use (&$now): int {
+            return $now;
+        });
+        $matcher = new SnapshotBlocklistMatcher($backend);
+
+        $request = new ServerRequest('GET', '/any', [], null, '1.1', ['REMOTE_ADDR' => '203.0.113.20']);
+        $this->assertTrue($matcher->match($request)->isMatch(), 'Entry matches before its expiry');
+
+        // Advance past the expiry WITHOUT touching the file; the SAME matcher must
+        // recompile from the new snapshot version and stop matching.
+        $now = 1_700_000_011;
+        $this->assertFalse($matcher->match($request)->isMatch(), 'Expired entry must stop matching on the unchanged file');
+    }
+
+    public function testMatchWithResolverUsesSuppliedDefaultWhenNoExplicitResolver(): void
+    {
+        $inMemoryPatternBackend = new InMemoryPatternBackend([new PatternEntry(PatternKind::IP, '203.0.113.10')]);
+        $snapshotBlocklistMatcher = new SnapshotBlocklistMatcher($inMemoryPatternBackend);
+
+        $serverRequest = (new ServerRequest('GET', '/any', [], null, '1.1', ['REMOTE_ADDR' => '10.0.0.1']))
+            ->withHeader('X-Real-IP', '203.0.113.10');
+
+        $this->assertTrue($snapshotBlocklistMatcher->matchWithResolver($serverRequest, $this->headerResolver('X-Real-IP'))->isMatch());
+    }
+
+    public function testMatchWithResolverExplicitResolverWinsOverDefault(): void
+    {
+        $inMemoryPatternBackend = new InMemoryPatternBackend([new PatternEntry(PatternKind::IP, '203.0.113.10')]);
+        $snapshotBlocklistMatcher = new SnapshotBlocklistMatcher($inMemoryPatternBackend, $this->headerResolver('X-Trusted-IP'));
+
+        $serverRequest = (new ServerRequest('GET', '/any', [], null, '1.1', ['REMOTE_ADDR' => '10.0.0.1']))
+            ->withHeader('X-Trusted-IP', '203.0.113.10')
+            ->withHeader('X-Real-IP', '198.51.100.9');
+
+        $this->assertTrue($snapshotBlocklistMatcher->matchWithResolver($serverRequest, $this->headerResolver('X-Real-IP'))->isMatch());
+    }
+
+    public function testWithBackendPreservesExplicitResolverAndReturnsSelfForSameBackend(): void
+    {
+        $backendA = new InMemoryPatternBackend([new PatternEntry(PatternKind::IP, '203.0.113.10')]);
+        $backendB = new InMemoryPatternBackend([new PatternEntry(PatternKind::IP, '203.0.113.10')]);
+        $matcher = new SnapshotBlocklistMatcher($backendA, $this->headerResolver('X-Real-IP'), 'threats');
+
+        // Re-pointing at the same instance is a no-op.
+        $this->assertSame($matcher, $matcher->withBackend($backendA));
+
+        // Re-pointed at a different backend, the explicit resolver must survive: the
+        // rebuilt matcher still reads the client IP from X-Real-IP, not REMOTE_ADDR.
+        $rebound = $matcher->withBackend($backendB);
+        $serverRequest = (new ServerRequest('GET', '/any', [], null, '1.1', ['REMOTE_ADDR' => '10.0.0.1']))
+            ->withHeader('X-Real-IP', '203.0.113.10');
+
+        $this->assertTrue($rebound->match($serverRequest)->isMatch());
+        $this->assertFalse($rebound->match(new ServerRequest('GET', '/any', [], null, '1.1', ['REMOTE_ADDR' => '203.0.113.10']))->isMatch());
+    }
+
+    /**
+     * With the default fail-open policy a blocklist regex that errors at match
+     * time (backtrack limit exceeded) counts as no match: a broken pattern must
+     * not block legitimate traffic.
+     */
+    public function testBlocklistRegexEngineErrorIsNoMatchWhenFailOpen(): void
+    {
+        $snapshotBlocklistMatcher = new SnapshotBlocklistMatcher($this->engineErrorBackend());
+
+        $this->withEngineErrorLimits(function () use ($snapshotBlocklistMatcher): void {
+            $this->assertFalse(
+                $snapshotBlocklistMatcher->match($this->engineErrorRequest())->isMatch(),
+                'Under fail-open a blocklist regex engine error must not count as a match'
+            );
+        });
+    }
+
+    /**
+     * Under a fail-closed policy the same engine error counts as a match, so an
+     * attacker who can force the error cannot slip a request past a block rule.
+     */
+    public function testBlocklistRegexEngineErrorIsMatchWhenFailClosed(): void
+    {
+        $snapshotBlocklistMatcher = new SnapshotBlocklistMatcher($this->engineErrorBackend());
+        $snapshotBlocklistMatcher->useFailOpen(false);
+
+        $this->withEngineErrorLimits(function () use ($snapshotBlocklistMatcher): void {
+            $this->assertTrue(
+                $snapshotBlocklistMatcher->match($this->engineErrorRequest())->isMatch(),
+                'Under fail-closed a blocklist regex engine error must count as a match'
+            );
+        });
+    }
+
+    /**
+     * withBackend() rebinding preserves an injected fail-closed policy.
+     */
+    public function testWithBackendPreservesFailurePolicy(): void
+    {
+        $snapshotBlocklistMatcher = new SnapshotBlocklistMatcher($this->engineErrorBackend());
+        $snapshotBlocklistMatcher->useFailOpen(false);
+
+        $rebound = $snapshotBlocklistMatcher->withBackend($this->engineErrorBackend());
+
+        $this->withEngineErrorLimits(function () use ($rebound): void {
+            $this->assertTrue(
+                $rebound->match($this->engineErrorRequest())->isMatch(),
+                'A rebound matcher must keep the fail-closed policy'
+            );
+        });
+    }
+
+    /**
+     * The Firewall hands Config::isFailOpen() to the pattern blocklist matcher,
+     * so a fail-closed firewall blocks on the engine error while the fail-open
+     * default passes the request.
+     */
+    public function testFirewallInjectsFailurePolicyIntoPatternBlocklist(): void
+    {
+        $failClosedConfig = new Config(new InMemoryCache());
+        $failClosedConfig->setFailOpen(false);
+
+        $failClosedConfig->blocklists->patternBlocklist('probes', [
+            new PatternEntry(PatternKind::PATH_REGEX, '/(?:a+)+$/D'),
+        ]);
+        $failClosedFirewall = new Firewall($failClosedConfig);
+
+        $failOpenConfig = new Config(new InMemoryCache());
+        $failOpenConfig->blocklists->patternBlocklist('probes', [
+            new PatternEntry(PatternKind::PATH_REGEX, '/(?:a+)+$/D'),
+        ]);
+        $failOpenFirewall = new Firewall($failOpenConfig);
+
+        $this->withEngineErrorLimits(function () use ($failClosedFirewall, $failOpenFirewall): void {
+            $this->assertSame(Outcome::BLOCKED, $failClosedFirewall->decide($this->engineErrorRequest())->outcome);
+            $this->assertTrue($failOpenFirewall->decide($this->engineErrorRequest())->isPass());
+        });
+    }
+
+    /**
+     * Backend with a compile-valid PATH_REGEX that errors at match time once
+     * the PCRE limits from withEngineErrorLimits() are in effect.
+     */
+    private function engineErrorBackend(): InMemoryPatternBackend
+    {
+        return new InMemoryPatternBackend([
+            new PatternEntry(PatternKind::PATH_REGEX, '/(?:a+)+$/D'),
+        ]);
+    }
+
+    private function engineErrorRequest(): ServerRequest
+    {
+        $path = '/' . str_repeat('a', 100) . '!';
+        return new ServerRequest('GET', $path, [], null, '1.1', ['REMOTE_ADDR' => '203.0.113.5']);
+    }
+
+    /**
+     * Run $assertions under PCRE limits that force a backtrack-limit engine
+     * error for the engineErrorBackend() pattern, restoring the limits after.
+     */
+    private function withEngineErrorLimits(callable $assertions): void
+    {
+        $originalBacktrackLimit = ini_get('pcre.backtrack_limit');
+        $originalJit = ini_get('pcre.jit');
+        ini_set('pcre.backtrack_limit', '10');
+        ini_set('pcre.jit', '0');
+
+        try {
+            // Prove the error path: under these limits preg_match itself errors out.
+            $this->assertFalse(
+                @preg_match('/(?:a+)+$/D', '/' . str_repeat('a', 100) . '!'),
+                'Precondition: the pattern must trigger a PCRE engine error'
+            );
+
+            $assertions();
+        } finally {
+            if ($originalBacktrackLimit !== false) {
+                ini_set('pcre.backtrack_limit', $originalBacktrackLimit);
+            }
+
+            if ($originalJit !== false) {
+                ini_set('pcre.jit', $originalJit);
+            }
+        }
+    }
+
+    /**
+     * A resolver that reads the client IP from the named header (null when absent).
+     *
+     * @return callable(ServerRequestInterface): ?string
+     */
+    private function headerResolver(string $header): callable
+    {
+        return static function (ServerRequestInterface $serverRequest) use ($header): ?string {
+            $value = $serverRequest->getHeaderLine($header);
+            return $value === '' ? null : $value;
+        };
+    }
+}

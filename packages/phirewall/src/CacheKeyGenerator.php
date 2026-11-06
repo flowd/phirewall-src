@@ -1,0 +1,117 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Flowd\Phirewall;
+
+final class CacheKeyGenerator
+{
+    /**
+     * Maximum length of a normalized rule-name fragment.
+     *
+     * This budget keeps the fragment small enough that the final cache key
+     * (once combined with the prefix and the sha256 key discriminator) stays
+     * well under the key-length limit enforced by the cache backends.
+     */
+    private const MAX_NAME_LENGTH = 120;
+
+    /**
+     * Length of the sha1-derived discriminator appended to truncated names.
+     */
+    private const HASH_SUFFIX_LENGTH = 12;
+
+    /** @var array<string, string> */
+    private array $cache = [];
+
+    public function __construct(private readonly string $prefix)
+    {
+    }
+
+    public function throttleKey(string $name, string $key): string
+    {
+        return $this->prefix . '.throttle.' . $this->normalizeName($name) . '.' . $this->hashKey($key);
+    }
+
+    public function slidingWindowKey(string $name, string $key, int $windowStart): string
+    {
+        return $this->prefix . '.throttle.' . $this->normalizeName($name) . '.' . $this->hashKey($key) . '.w.' . $windowStart;
+    }
+
+    public function fail2BanFailKey(string $name, string $key): string
+    {
+        return $this->prefix . '.fail2ban.fail.' . $this->normalizeName($name) . '.' . $this->hashKey($key);
+    }
+
+    public function fail2BanBanKey(string $name, string $key): string
+    {
+        return $this->prefix . '.fail2ban.ban.' . $this->normalizeName($name) . '.' . $this->hashKey($key);
+    }
+
+    public function allow2BanHitKey(string $name, string $key): string
+    {
+        return $this->prefix . '.allow2ban.hit.' . $this->normalizeName($name) . '.' . $this->hashKey($key);
+    }
+
+    public function allow2BanBanKey(string $name, string $key): string
+    {
+        return $this->prefix . '.allow2ban.ban.' . $this->normalizeName($name) . '.' . $this->hashKey($key);
+    }
+
+    public function trackKey(string $name, string $key): string
+    {
+        return $this->prefix . '.track.' . $this->normalizeName($name) . '.' . $this->hashKey($key);
+    }
+
+    /**
+     * Build the registry cache key used by BanManager.
+     */
+    public function banRegistryKey(string $type, string $ruleName): string
+    {
+        return $this->prefix . '.ban-registry.' . $type . '.' . $this->normalizeName($ruleName);
+    }
+
+    /**
+     * Normalize a rule name for use in cache keys (human-readable, safe characters).
+     */
+    public function normalizeName(string $name): string
+    {
+        $cacheKey = 'n:' . $name;
+
+        return $this->cache[$cacheKey] ??= $this->doNormalize($name);
+    }
+
+    /**
+     * Hash a user-extracted key for use in cache keys (collision-free).
+     *
+     * Not memoized: user-extracted keys are unbounded (IPs, tokens, etc.)
+     * and caching them would grow without limit in long-lived processes.
+     */
+    public function hashKey(string $key): string
+    {
+        return hash('sha256', $key);
+    }
+
+    private function doNormalize(string $value): string
+    {
+        $original = trim($value);
+        if ($original === '') {
+            return 'empty';
+        }
+
+        $sanitized = preg_replace('/[^A-Za-z0-9._-]/', '_', $original);
+        if ($sanitized === null) {
+            $sanitized = 'invalid';
+        }
+
+        $sanitized = preg_replace('/_+/', '_', $sanitized) ?? $sanitized;
+        if (strlen($sanitized) > self::MAX_NAME_LENGTH) {
+            // Reserve room for the hash suffix plus its '-' separator so the
+            // truncated result is exactly MAX_NAME_LENGTH characters long.
+            $truncationOffset = self::MAX_NAME_LENGTH - (self::HASH_SUFFIX_LENGTH + 1);
+            $hash = substr(sha1($original), 0, self::HASH_SUFFIX_LENGTH);
+            $sanitized = substr($sanitized, 0, $truncationOffset) . '-' . $hash;
+        }
+
+        return $sanitized;
+    }
+}

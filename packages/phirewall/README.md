@@ -1,0 +1,536 @@
+# Phirewall
+
+<img src="docs/assets/logo.svg" width="200" alt="Phirewall Logo" align="right">
+
+**Protect your PHP application from brute force, DDoS, SQL injection, XSS, and bot attacks with a single middleware.**
+
+**[Phirewall](https://phirewall.de)** is a PSR-15 middleware that provides comprehensive application-layer protection. It's lightweight, framework-agnostic, and easy to configure.
+
+---
+
+## Why Phirewall?
+
+- **Simple Setup** - Add protection in minutes with sensible defaults
+- **Multiple Attack Vectors** - Rate limiting, brute force protection, bot detection, and OWASP CRS (the latter via a companion package)
+- **Framework Agnostic** - Works with any PSR-15 compatible framework (Laravel, Symfony, Slim, Mezzio, etc.)
+- **Production Ready** - Redis support for multi-server deployments
+- **Observable** - PSR-14 events for logging, metrics, and alerting
+
+## Quick Start
+
+```bash
+composer require flowd/phirewall
+```
+
+```php
+use Flowd\Phirewall\Config;
+use Flowd\Phirewall\Middleware;
+use Flowd\Phirewall\Store\InMemoryCache;
+
+// Create the firewall
+$config = new Config(new InMemoryCache());
+
+// Allow health checks to bypass all rules
+$config->safelists->add('health', fn($req) => $req->getUri()->getPath() === '/health');
+
+// Block common scanner paths
+$config->blocklists->add('scanners', fn($req) => (bool) preg_match('#/\.git($|/)#', $req->getUri()->getPath()));
+
+// Rate limit: 100 requests per minute per IP
+$config->throttles->add('api', limit: 100, period: 60 /* seconds */);
+
+// Scoped rate limit: only /search requests count, still per client IP
+$config->throttles->add('search', limit: 10, period: 60,
+    scope: fn($req) => $req->getUri()->getPath() === '/search',
+);
+
+// Ban IP after 5 failed logins in 5 minutes. Fail2Ban blocks EVERY filter match,
+// so a login rule keeps its filter closed (fn($req) => false) and is driven by
+// handler-signaled failures via RequestContext instead of a request-time filter
+// (see "Login Protection" below for the handler-side snippet).
+$config->fail2ban->add('login', threshold: 5, period: 300 /* seconds */, ban: 3600 /* seconds */,
+    filter: fn($req) => false,
+);
+
+// Add to your middleware stack
+$middleware = new Middleware($config);
+// The PSR-17 ResponseFactory is optional — Phirewall auto-detects installed factories.
+// Pass one explicitly if needed: new Middleware($config, new Psr17Factory())
+```
+
+Add the middleware to your PSR-15 pipeline. All requests will be evaluated against your rules before reaching your application.
+
+## Try It Now
+
+Run one of the included examples to see Phirewall in action:
+
+```bash
+# Basic setup demo
+php examples/01-basic-setup.php
+
+# See brute force protection
+php examples/02-brute-force-protection.php
+
+# See scanner and bot detection
+php examples/06-bot-detection.php
+
+# Full production setup
+php examples/08-comprehensive-protection.php
+```
+
+## Examples
+
+The [examples/](examples/) folder contains runnable examples:
+
+| # | Example | Description |
+|---|---------|-------------|
+| 01 | [basic-setup](examples/01-basic-setup.php) | Minimal configuration to get started |
+| 02 | [brute-force-protection](examples/02-brute-force-protection.php) | Fail2Ban-style login protection |
+| 03 | [api-rate-limiting](examples/03-api-rate-limiting.php) | Tiered rate limits for APIs |
+| 06 | [bot-detection](examples/06-bot-detection.php) | Scanner and malicious bot blocking |
+| 07 | [ip-blocklist](examples/07-ip-blocklist.php) | File-backed IP/CIDR blocklists |
+| 08 | [comprehensive-protection](examples/08-comprehensive-protection.php) | Production-ready multi-layer setup |
+| 09 | [observability-monolog](examples/09-observability-monolog.php) | Event logging with Monolog |
+| 10 | [observability-opentelemetry](examples/10-observability-opentelemetry.php) | Distributed tracing with OpenTelemetry |
+| 11 | [redis-storage](examples/11-redis-storage.php) | Redis backend for multi-server deployments |
+| 12 | [apache-htaccess](examples/12-apache-htaccess.php) | Apache .htaccess IP blocking |
+| 13 | [benchmarks](examples/13-benchmarks.php) | Storage backend performance comparison |
+| 15 | [in-memory-pattern-backend](examples/15-in-memory-pattern-backend.php) | Configuration-based CIDR/IP blocklists |
+| 16 | [allow2ban](examples/16-allow2ban.php) | Hard volume cap with auto-ban |
+| 17 | [known-scanners](examples/17-known-scanners.php) | Block known attack tools and vulnerability scanners |
+| 18 | [trusted-bots](examples/18-trusted-bots.php) | Trusted bot verification via reverse DNS |
+| 19 | [header-analysis](examples/19-header-analysis.php) | Suspicious headers detection |
+| 20 | [rule-benchmarks](examples/20-rule-benchmarks.php) | Firewall rule performance benchmarks |
+| 21 | [sliding-window](examples/21-sliding-window.php) | Sliding window rate limiting |
+| 22 | [multi-throttle](examples/22-multi-throttle.php) | Multi-window burst + sustained rate limiting |
+| 23 | [dynamic-limits](examples/23-dynamic-limits.php) | Role-based dynamic throttle limits |
+| 24 | [pdo-storage](examples/24-pdo-storage.php) | PdoCache with SQLite, MySQL, PostgreSQL |
+| 25 | [track-threshold](examples/25-track-threshold.php) | Track with optional threshold and thresholdReached flag |
+| 26 | [psr17-factories](examples/26-psr17-factories.php) | PSR-17 response factory integration |
+| 27 | [request-context](examples/27-request-context.php) | RequestContext API for post-handler fail2ban signaling |
+| 28 | [portable-config-signing](examples/28-portable-config-signing.php) | HMAC-signed PortableConfig transport with tamper rejection |
+| 29 | [portable-config](examples/29-portable-config.php) | PortableConfig as data: round-trip, signing, and DB hot-reload |
+| 30 | [config-composition](examples/30-config-composition.php) | Layer vendor + environment + tenant + deployment Configs into one |
+| 31 | [presets](examples/31-presets.php) | Ready-to-use rule bundles: standalone use, portable inspection, composition, and version checks |
+| 32 | [compiled-data-cache](examples/32-compiled-data-cache.php) | Skip re-parsing expensive preset data: process memoization, OPcache artifact, mtime rebuilds |
+
+## Features
+
+### Protection Layers
+
+| Feature | Description |
+|---------|-------------|
+| **Safelists** | Bypass all checks for trusted requests (health checks, internal IPs) |
+| **Blocklists** | Immediately deny suspicious requests (403) |
+| **Throttling** | Fixed and sliding window rate limiting by IP, user, API key, or custom key (429) with dynamic limits and multiThrottle |
+| **Fail2Ban** | Block every filter match (403); ban the key after repeated matches. For unambiguously malicious requests (scanner paths) or handler-signaled failures |
+| **Allow2Ban** | Count requests (all, or only those an optional filter matches) and ban after too many; matching requests pass until the threshold. A hard volume cap, or a let-through brute-force counter |
+| **Track with Threshold** | Passive counting with optional alert threshold |
+| **OWASP CRS** | SQL injection, XSS, and more via the companion package [flowd/phirewall-preset-owasp-crs](https://github.com/flowd/phirewall-preset-owasp-crs) |
+| **Pattern Backends** | File/Redis-backed blocklists with IP, CIDR, path, and header patterns |
+
+### Matchers
+
+| Matcher | Description |
+|---------|-------------|
+| **Known Scanners** | Block sqlmap, nikto, nmap, and other scanner User-Agents |
+| **Trusted Bots** | Safelist Googlebot, Bingbot, etc. via reverse DNS verification |
+| **Suspicious Headers** | Block requests missing standard browser headers |
+| **IP Matcher** | Safelist or block by IP/CIDR range |
+
+### Observability
+
+- **PSR-14 Events** - `SafelistMatched`, `BlocklistMatched`, `ThrottleExceeded`, `Fail2BanMatched`, `Fail2BanBanned`, `Fail2BanBlocked`, `Allow2BanBanned`, `Allow2BanBlocked`, `TrackHit`, `FirewallError`
+- **Fail-Open by Default** - Cache outages don't take down the application; a `FirewallError` event is dispatched via PSR-14. Trade-off: while failing open all rules are skipped, so deployments that must keep blocking during an outage should `setFailOpen(false)` and monitor `FirewallError`
+- **Diagnostics Counters** - Per-rule statistics for monitoring
+- **Standard Headers** - `X-RateLimit-*`, `Retry-After`, `X-Phirewall-*`
+
+### Storage Backends
+
+| Backend | Use Case |
+|---------|----------|
+| `InMemoryCache` | Development, testing, single requests |
+| `ApcuCache` | Single-server production |
+| `RedisCache` | Multi-server production |
+| `PdoCache` | SQL-backed persistence (MySQL, PostgreSQL, SQLite) |
+
+All backends are PSR-16 caches and validate keys accordingly: a key must be a non-empty string with none of the PSR-16 reserved characters (`{}()/\@:`). As an additional restriction of its own (beyond PSR-16), Phirewall also rejects control and whitespace characters, and the multi-key methods reject non-string keys. Invalid keys raise `Flowd\Phirewall\Store\InvalidCacheKeyException` (a `Psr\SimpleCache\InvalidArgumentException`). Phirewall's own keys are always compliant.
+
+For expensive-to-build plain data (parsed rule sets, IP feeds), `Flowd\Phirewall\Support\CompiledDataCache` offers a two-level cache for preset packages: per-process memoization plus an OPcache-served compiled PHP artifact, both revalidated against the source files' mtimes. It is not a PSR-16 backend and stores no counters or bans - it only caches expensively built preset data. Cache failures degrade silently to rebuilding; keep the artifact directory outside the web root.
+
+## Documentation
+
+Full documentation is available at **[phirewall.de](https://phirewall.de)**:
+
+- [Getting Started](https://phirewall.de/getting-started.html) - Installation & quick start guide
+- [Framework Integration](https://phirewall.de/examples.html) - PSR-15, Laravel, Symfony, Slim, Mezzio
+- [Features](https://phirewall.de/features/safelists-blocklists.html) - Safelists, blocklists, rate limiting, fail2ban, bot detection, OWASP rules
+- [Advanced](https://phirewall.de/advanced/dynamic-throttle.html) - Dynamic throttles, observability, infrastructure adapters
+- [Common Attacks](https://phirewall.de/common-attacks.html) - Protection recipes for 10+ attack types
+- [FAQ](https://phirewall.de/faq.html) - Frequently asked questions
+
+## Installation
+
+```bash
+composer require flowd/phirewall
+```
+
+### Optional Dependencies
+
+```bash
+# For Redis-backed distributed counters (multi-server)
+composer require predis/predis
+
+# For Monolog logging integration
+composer require monolog/monolog
+```
+
+**APCu**: Enable the PHP extension and set `apc.enable_cli=1` for CLI testing.
+
+## Response Headers
+
+Phirewall can add diagnostic headers to the response when a request is blocked or safelisted.
+These diagnostic headers are **opt-in** and disabled by default:
+
+```php
+$config->enableResponseHeaders(); // Enable X-Phirewall, X-Phirewall-Matched, and X-Phirewall-Safelist headers
+```
+
+| Header | Description | Opt-in required |
+|--------|-------------|-----------------|
+| `X-Phirewall` | Block type: `blocklist`, `throttle`, `fail2ban`, `allow2ban` | Yes |
+| `X-Phirewall-Matched` | Rule name that triggered | Yes |
+| `X-Phirewall-Safelist` | Safelist rule that matched (on allowed requests) | Yes |
+| `Retry-After` | Seconds until the client may retry (throttles and allow2ban bans) | No (always present) |
+
+> **Note:** `Retry-After` is always included on responses where a retry delay applies (429 throttles and allow2ban bans), regardless of `enableResponseHeaders()`.
+
+Enable `$config->enableRateLimitHeaders()` for standard `X-RateLimit-*` headers.
+
+## Client IP Behind Proxies
+
+Rules key on the **client IP** by default. Behind a load balancer or CDN, set a
+`TrustedProxyResolver` once so "client IP" becomes the real client from the forwarded
+chain. It only trusts the forwarded headers when the connecting peer is one of your
+declared proxies, so a direct client cannot spoof its IP:
+
+```php
+use Flowd\Phirewall\Http\TrustedProxyResolver;
+
+$config->setIpResolver((new TrustedProxyResolver([
+    '10.0.0.0/8',      // Internal network
+    '172.16.0.0/12',   // Docker
+]))->resolve(...));
+
+// Every rule now resolves the real client IP: keyless counter rules, IP matchers,
+// and PortableConfig::keyIp()/filterIp(). Omit the key to use it:
+$config->throttles->add('api', limit: 100, period: 60);
+```
+
+When no resolver is set the client IP is `REMOTE_ADDR`. For the raw connecting peer
+address regardless of proxy configuration, read `$request->getServerParams()['REMOTE_ADDR']`
+directly.
+
+## Custom Responses
+
+Customize blocked responses while keeping standard headers:
+
+```php
+use Flowd\Phirewall\Config\Response\ClosureBlocklistedResponseFactory;
+use Flowd\Phirewall\Config\Response\ClosureThrottledResponseFactory;
+
+$config->blocklistedResponseFactory = new ClosureBlocklistedResponseFactory(
+    function (string $rule, string $type, $req) {
+        return new Response(403, ['Content-Type' => 'application/json'],
+            json_encode(['error' => 'Blocked', 'rule' => $rule])
+        );
+    }
+);
+
+$config->throttledResponseFactory = new ClosureThrottledResponseFactory(
+    function (string $rule, int $retryAfter, $req) {
+        return new Response(429, ['Content-Type' => 'application/json'],
+            json_encode(['error' => 'Rate limited', 'retry_after' => $retryAfter])
+        );
+    }
+);
+```
+
+### PSR-17 Response Factories
+
+Use standard PSR-17 factories for framework-native responses:
+
+```php
+use Nyholm\Psr7\Factory\Psr17Factory;
+
+$psr17 = new Psr17Factory();
+$config->usePsr17Responses($psr17, $psr17);
+```
+
+Or customise body text per response type:
+
+```php
+use Flowd\Phirewall\Config\Response\Psr17BlocklistedResponseFactory;
+use Flowd\Phirewall\Config\Response\Psr17ThrottledResponseFactory;
+
+$config->blocklistedResponseFactory = new Psr17BlocklistedResponseFactory(
+    $psr17, $psr17, 'Access Denied',
+);
+$config->throttledResponseFactory = new Psr17ThrottledResponseFactory(
+    $psr17, $psr17, 'Rate limit exceeded.',
+);
+```
+
+## OWASP Core Rule Set
+
+OWASP CRS detection (SQL injection, XSS, RCE, LFI, ...) lives in the companion
+package [flowd/phirewall-preset-owasp-crs](https://github.com/flowd/phirewall-preset-owasp-crs).
+It ships the ModSecurity SecRule engine plus ready-made config-set presets:
+
+```bash
+composer require flowd/phirewall-preset-owasp-crs
+```
+
+```php
+use Flowd\PhirewallPresetOwaspCrs\ParanoiaLevel;
+use Flowd\PhirewallPresetOwaspCrs\Presets;
+
+$config = $config->with(Presets::blocklist(ParanoiaLevel::Level1));
+```
+
+The SecRule engine itself (`Flowd\PhirewallPresetOwaspCrs\Engine\SecRuleLoader`) is part of that
+package too, so you can also load your own ModSecurity-style `.conf` rules. The
+engine was extracted from this core package in 0.6.
+
+## Portable Config
+
+`PortableConfig` expresses a ruleset as plain, JSON-serializable data instead of PHP closures, so a configuration can be stored in a database, shipped through a config service, diffed in git, or shared between processes — then rebuilt into a live `Config` with `Config::with()` (a `PortableConfig` is a [`ConfigLayer`](#config-composition--layering)).
+
+```php
+use Flowd\Phirewall\Config;
+use Flowd\Phirewall\Pattern\PatternKind;
+use Flowd\Phirewall\Portable\PortableConfig;
+
+$portable = PortableConfig::create()
+    ->setKeyPrefix('shop')
+    ->enableResponseHeaders()
+    ->safelist('health', PortableConfig::filterPathEquals('/health'))
+    ->blocklist('secrets-probe', PortableConfig::filterPathPrefix('/.env'))
+    ->blocklist('scanners', PortableConfig::filterKnownScanners())
+    ->blocklist('bad-net', PortableConfig::filterIp(['203.0.113.0/24']))
+    ->throttle('api', limit: 100, period: 60, key: PortableConfig::keyHashedHeader('X-Api-Key'), sliding: true)
+    ->allow2ban('volume-cap', threshold: 1000, period: 60, ban: 300, key: PortableConfig::keyIp())
+    ->fail2ban('repo-probes', threshold: 5, period: 60, ban: 900, filter: PortableConfig::filterPathRegex('#/\.git($|/)#'), key: PortableConfig::keyIp())
+    ->patternBlocklist('threats', [
+        PortableConfig::patternEntry(PatternKind::CIDR, '10.66.0.0/16'),
+        PortableConfig::patternEntry(PatternKind::PATH_REGEX, '#/\.git(/|$)#'),
+    ]);
+
+// Round-trip as data …
+$array = $portable->toArray();
+$config = (new Config($cache))->with(PortableConfig::fromArray($array));
+```
+
+**Supported rule types:** safelists, blocklists, throttles (incl. `sliding` and an optional `scope` filter that restricts which requests the throttle counts — e.g. `filterPathPrefix('/api')`), fail2ban, allow2ban (incl. an optional `filter` that restricts which requests the rule counts), tracks, and pattern backends. **Filters:** `all`, `none`, `path_equals`, `path_prefix`, `path_regex`, `method_equals`, `method_in`, `header_equals`, `header_present`, `header_regex`, plus the matcher-backed `ip`, `known_scanners`, and `suspicious_headers`. **Key extractors:** `ip`, `method`, `path`, `header`, `hashed_header`.
+
+### Signed transport
+
+When the serialized config is read back from storage you do not fully control (a shared filesystem, S3, etcd, a config service), sign it so tampering — e.g. an injected allow-all safelist — is rejected before the rules are applied:
+
+```php
+$signed   = $portable->toSignedJson($secretKey);          // HMAC-SHA256 envelope
+$restored = PortableConfig::loadSigned($signed, $secretKey); // throws on tamper / wrong key
+```
+
+Signing keys must be at least 16 bytes (32 random bytes recommended). See [28-portable-config-signing.php](examples/28-portable-config-signing.php) and [29-portable-config.php](examples/29-portable-config.php) (round-trip, signing, and a database hot-reload scenario).
+
+> **Tip:** Stack several PortableConfigs (vendor baseline, environment, tenant, …) into one effective ruleset with [Config composition / layering](#config-composition--layering).
+
+> **Not portable by design:** trusted-bot reverse-DNS matchers, OWASP CRS rulesets, file-backed lists, and closure-driven dynamic throttle limits are not serializable and are intentionally excluded from the schema.
+
+## Config composition / layering
+
+Real deployments rarely have a single source of firewall rules. A vendor ships a baseline, an environment adds its own rules, a tenant overrides a few, and a single deployment applies a last-minute tweak. `Config::with(ConfigLayer ...$layers)` applies these layers onto one effective `Config` — **without mutating any input** — so each layer can be owned and shipped independently. A layer is anything that implements `ConfigLayer`: another `Config`, or a [`PortableConfig`](#portable-config) (rules as data).
+
+```php
+use Flowd\Phirewall\Config;
+
+// Each layer is a ConfigLayer — frequently a PortableConfig — applied onto one base Config.
+$layered = (new Config($cache))->with(
+    $vendorPortable,    // shared product defaults
+    $envPortable,       // staging vs. production
+    $tenantPortable,    // per-customer policy
+);
+$deploymentTweak = (new Config($cache))->setFailOpen(false);
+
+// Later layers win.
+$effective = $layered->with($deploymentTweak);
+```
+
+Merge semantics (overlays applied left to right, so **later sources win**):
+
+- **Rules merge by name** within each section (safelists, blocklists, throttles, fail2ban, allow2ban, tracks). When the same rule name appears in more than one layer the later rule **replaces** the earlier one in place — base ordering is preserved and genuinely new rules are appended. The result is a union, never duplicates.
+- **Pattern backends** (behind pattern blocklists) merge by name the same way.
+- **`enabled`** uses **strict last-layer-wins** (fail-safe): the composed value is the last layer's `enabled`, so an explicit `enable()` / `disable()` always takes effect and an ambiguous composition is never left silently disabled — the one exception to "last explicit value wins".
+- **Other scalar / object options** (`keyPrefix`, `failOpen`, the response-header toggles, the IP resolver, the discriminator normalizer, the response factories) follow **last explicit value wins**: the value comes from the last layer whose value differs from the field default, so a layer that simply left an option alone never clobbers an explicit choice from an earlier layer. The IP resolver also reaches rules at evaluation time: IP-aware matchers and keyless counter rules added **without** an explicit resolver resolve the client IP against the composed `Config`, so a later layer's resolver applies to rules carried over from earlier layers. Only a matcher given an **explicit** resolver keeps it regardless of layering.
+- **Infrastructure** — the PSR-16 cache, PSR-14 event dispatcher, and clock — is inherited from the base layer.
+
+See [30-config-composition.php](examples/30-config-composition.php) for a full vendor → environment → tenant → deployment walkthrough.
+
+## Presets
+
+Presets are ready-to-use rule bundles for recurring scenarios, so you don't have to hand-write the same rules each time. Each preset is a [`PortableConfig`](#portable-config): plain, inspectable, serializable data, and a [`ConfigLayer`](#config-composition--layering), returned directly (to serialize, diff, sign, or layer) and applied onto a `Config` with `Config::with()`.
+
+```php
+use Flowd\Phirewall\Config;
+use Flowd\Phirewall\Preset\Presets;
+
+// A preset on its own (a Config requires a PSR-16 cache):
+$config = (new Config($cache))->with(Presets::scannerBlocking());
+
+// Inspect / serialize the underlying portable schema:
+$schema = Presets::scannerBlocking()->toArray();
+
+// Presets are layers, so they apply onto your own base Config (later wins by name):
+$config = (new Config($cache))->with(
+    Presets::scannerBlocking(),
+    Presets::sensitivePathBlocking(),
+    $myConfig, // your overrides win
+);
+```
+
+| Preset | Rules (all namespaced `preset.<area>.*`) |
+|--------|------------------------------------------|
+| `scannerBlocking()` | `preset.scanner.known-tools` (known scanner/exploit User-Agents) + `preset.scanner.suspicious-headers` (missing standard browser `Accept-*` headers). |
+| `sensitivePathBlocking()` | `preset.sensitive-path.probes`: pattern blocklist for `/.git`, `/.svn`, `/.hg`, `/.env*`, `/.aws/credentials`, `/.htpasswd`, `/.htaccess`, `/.DS_Store`. |
+
+**Conventions & overrides.** The shipped presets target signals that are universal across applications (scanner User-Agents, missing browser headers, well-known sensitive paths), so they assume nothing about your routing; a `PortableConfig` you build yourself can key on whatever fits your environment, including routes your own apps standardize. Because every rule is namespaced, you override any of them by composing the preset with your own `Config` that redefines the rule by the same name.
+
+> **Note:** `scannerBlocking()`'s `suspicious-headers` rule is aggressive: some legitimate API clients and privacy tools also omit `Accept-*` headers. Drop or override it by name if your traffic includes non-browser clients.
+
+**Versioning & update checks.** `Presets::VERSION` identifies the bundled rule catalogue. To surface "a newer ruleset is available", compare `Presets::VERSION` against a feed you trust (Packagist, an internal config service, a versioned JSON document, …) with `version_compare(Presets::VERSION, $latestFromYourFeed, '<')`. Phirewall hardcodes no endpoint and performs **no network I/O**; wiring a real source is the integrator's job.
+
+See [31-presets.php](examples/31-presets.php) for standalone use, portable inspection, composition with override-by-name, and the version comparison.
+
+## Real-World Recipes
+
+### API Rate Limiting
+
+```php
+use Flowd\Phirewall\KeyExtractors;
+
+// Global limit
+$config->throttles->add('global', limit: 1000, period: 60);
+
+// Burst + sustained rate limiting with multiThrottle
+$config->throttles->multi('api', [
+    1  => 5,     // 5 req/s burst
+    60 => 200,   // 200 req/min sustained
+]);
+
+// Dynamic limits based on user role
+// Note: a header-keyed rule is skipped when the header is absent, so a client can avoid the
+// limit by omitting X-User-Id. Pair it with a rule that rejects the missing header, or key on IP.
+$config->throttles->add('user', fn($req) => $req->getHeaderLine('X-Plan') === 'pro' ? 5000 : 100, 60,
+    KeyExtractors::header('X-User-Id')
+);
+```
+
+### Login Protection
+
+```php
+// Throttle login attempts: scope restricts which requests count,
+// the keyless rule counts per client IP (Config IP resolver, else REMOTE_ADDR).
+$config->throttles->add('login', limit: 10, period: 60,
+    scope: fn($req) => $req->getUri()->getPath() === '/login',
+);
+
+// Ban after failures — signaled via RequestContext from your handler.
+// Fail2Ban blocks on any filter match, and a real login POST is legitimate, so the
+// filter stays closed (fn($request) => false) and the handler reports the failures instead.
+$config->fail2ban->add('login-ban', threshold: 5, period: 300, ban: 3600,
+    filter: fn($request): bool => false,
+);
+```
+
+In your login handler, signal failures via the request context. The second
+argument is optional — when omitted, the firewall reuses the rule's own
+`keyExtractor` against the current request:
+
+```php
+use Flowd\Phirewall\Context\RequestContext;
+
+$context = $request->getAttribute(RequestContext::ATTRIBUTE_NAME);
+if (!$authenticated && $context instanceof RequestContext) {
+    $context->recordFailure('login-ban');
+}
+```
+
+By default a banning signal leaves the current response untouched; the ban
+applies from the next request. Opt in to a 403 for the banning request itself
+with `$config->enableBlockOnSignalBan()` - the middleware then replaces the
+handler response with the regular blocked response.
+
+Note that this 403 is applied only after the handler has fully run: the
+application has already processed the possibly malicious request, and its side
+effects (database writes, e-mails, state changes) have happened. The flag only
+changes what the client sees. When processing must stop as soon as the failure
+is known, that decision belongs in your handler - record the signal and abort
+your own processing there.
+
+No failure signal available from your handler? Use **Allow2Ban with a filter**
+and count every login attempt instead: matching requests are counted but pass
+until the threshold, then the key is banned. Pick the threshold generously,
+because successful attempts count too.
+
+```php
+$config->allow2ban->add('login-brute-force', threshold: 10, period: 300, banSeconds: 3600,
+    key: fn($request): string => $request->getServerParams()['REMOTE_ADDR'],
+    filter: fn($request): bool => $request->getMethod() === 'POST'
+        && $request->getUri()->getPath() === '/login',
+);
+```
+
+### Bot Detection
+
+```php
+$scanners = ['sqlmap', 'nikto', 'nmap', 'burp', 'dirbuster'];
+
+$config->blocklists->add('scanners', function($req) use ($scanners) {
+    $ua = strtolower($req->getHeaderLine('User-Agent'));
+    foreach ($scanners as $scanner) {
+        if (str_contains($ua, $scanner)) return true;
+    }
+    return false;
+});
+```
+
+## Development
+
+```bash
+# Run tests
+composer test
+
+# Run PdoCache tests against SQLite, MySQL, and PostgreSQL (requires Docker)
+composer test:database
+# Or directly: ./bin/test-databases.sh --keep  (keeps containers running)
+
+# Run performance benchmarks only (no coverage, Xdebug disabled)
+XDEBUG_MODE=off PHIREWALL_RUN_BENCHMARKS=1 vendor/bin/phpunit --group performance --no-coverage
+
+# Fix code style
+composer fix
+
+# Mutation testing
+composer test:mutation
+```
+
+## Sponsors
+
+This project received funding from TYPO3 Association through its Community Budget program.
+
+[Read more](https://typo3.org/article/members-have-selected-four-ideas-to-be-funded-in-quarter-4-2025)
+
+## License
+
+Dual licensed under LGPL-3.0-or-later and proprietary. See [LICENSE](LICENSE) for details.

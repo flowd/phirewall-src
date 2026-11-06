@@ -1,0 +1,68 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Flowd\Phirewall\Tests\Infrastructure;
+
+use Flowd\Phirewall\Infrastructure\ApacheHtaccessAdapter;
+use org\bovigo\vfs\vfsStream;
+use PHPUnit\Framework\TestCase;
+
+final class ApacheHtaccessAdapterBatchTest extends TestCase
+{
+    private string $tmpDir = '';
+
+    private string $htaccess = '';
+
+    protected function setUp(): void
+    {
+        $this->tmpDir = vfsStream::setup('root')->url();
+        $this->htaccess = $this->tmpDir . '/.htaccess';
+    }
+
+    public function testBlockManyAndUnblockManyAreAtomicAndIdempotent(): void
+    {
+        file_put_contents($this->htaccess, "# Some prelude\nAllowOverride All\n\n");
+        $apacheHtaccessAdapter = new ApacheHtaccessAdapter($this->htaccess);
+
+        // Block multiple, including duplicates and mixed IPv4/IPv6
+        $apacheHtaccessAdapter->blockMany(['203.0.113.10', '2001:db8::1', '203.0.113.10']);
+
+        $content = (string) file_get_contents($this->htaccess);
+        $this->assertStringContainsString('# BEGIN Phirewall', $content);
+        $this->assertStringContainsString('Require not ip 203.0.113.10', $content);
+        $this->assertStringContainsString('Require not ip 2001:db8::1', $content);
+
+        // Idempotent second call should not duplicate lines
+        $apacheHtaccessAdapter->blockMany(['2001:db8::1']);
+        $content2 = (string) file_get_contents($this->htaccess);
+        $this->assertSame($content, $content2, 'Second identical blockMany should not change file');
+
+        // Remove subset and ensure others remain
+        $apacheHtaccessAdapter->unblockMany(['203.0.113.10']);
+        $content3 = (string) file_get_contents($this->htaccess);
+        $this->assertStringNotContainsString('Require not ip 203.0.113.10', $content3);
+        $this->assertStringContainsString('Require not ip 2001:db8::1', $content3);
+
+        // Removing non-existent IPs is a no-op
+        $apacheHtaccessAdapter->unblockMany(['203.0.113.10']);
+        $content4 = (string) file_get_contents($this->htaccess);
+        $this->assertSame($content3, $content4);
+    }
+
+    public function testBlockManyWithInvalidIpThrowsAndDoesNotModifyFile(): void
+    {
+        file_put_contents($this->htaccess, "# Prelude\n");
+        $apacheHtaccessAdapter = new ApacheHtaccessAdapter($this->htaccess);
+
+        $this->expectException(\InvalidArgumentException::class);
+        try {
+            $apacheHtaccessAdapter->blockMany(['203.0.113.10', 'not_an_ip']);
+        } finally {
+            $content = (string) file_get_contents($this->htaccess);
+            // No managed section should have been created
+            $this->assertStringNotContainsString('# BEGIN Phirewall', $content);
+            $this->assertStringNotContainsString('Require not ip 203.0.113.10', $content);
+        }
+    }
+}
