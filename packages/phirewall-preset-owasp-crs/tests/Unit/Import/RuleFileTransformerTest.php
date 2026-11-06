@@ -1,0 +1,248 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Flowd\PhirewallPresetOwaspCrs\Tests\Unit\Import;
+
+use Flowd\PhirewallPresetOwaspCrs\Import\RuleFileTransformer;
+use PHPUnit\Framework\TestCase;
+
+final class RuleFileTransformerTest extends TestCase
+{
+    private function transformer(): RuleFileTransformer
+    {
+        return new RuleFileTransformer();
+    }
+
+    public function testKeepsBlockingRulesGroupedByParanoiaLevel(): void
+    {
+        $rulesText = <<<'CRS'
+        SecRule ARGS "@rx union.*select" \
+            "id:942100,phase:2,block,t:none,msg:'SQLi',tag:'paranoia-level/1'"
+        SecRule ARGS "@rx sleep\(" \
+            "id:942160,phase:2,block,t:none,msg:'SQLi timing',tag:'paranoia-level/2'"
+        CRS;
+
+        $fileTransformation = $this->transformer()->transform($rulesText);
+
+        $this->assertSame(2, $fileTransformation->keptRuleCount());
+        $this->assertCount(1, $fileTransformation->ruleLinesByParanoiaLevel[1]);
+        $this->assertCount(1, $fileTransformation->ruleLinesByParanoiaLevel[2]);
+        $this->assertStringContainsString('id:942100', $fileTransformation->ruleLinesByParanoiaLevel[1][0]);
+        $this->assertStringContainsString('id:942160', $fileTransformation->ruleLinesByParanoiaLevel[2][0]);
+        $this->assertSame([], $fileTransformation->droppedRuleCounts);
+    }
+
+    public function testUntaggedRulesDefaultToParanoiaLevelOne(): void
+    {
+        $fileTransformation = $this->transformer()->transform(
+            'SecRule ARGS "@rx evil" "id:1,deny"',
+        );
+
+        $this->assertCount(1, $fileTransformation->ruleLinesByParanoiaLevel[1]);
+    }
+
+    public function testDropsChainsIncludingAllContinuationParts(): void
+    {
+        $rulesText = <<<'CRS'
+        SecRule REQUEST_METHOD "@streq POST" \
+            "id:920170,phase:1,block,chain,tag:'paranoia-level/1'"
+        SecRule ARGS "@rx .*" "chain"
+        SecRule QUERY_STRING "@rx .+" "t:none"
+        SecRule ARGS "@rx evil" "id:942999,phase:2,block,tag:'paranoia-level/1'"
+        CRS;
+
+        $fileTransformation = $this->transformer()->transform($rulesText);
+
+        $this->assertSame(1, $fileTransformation->keptRuleCount());
+        $this->assertStringContainsString('id:942999', $fileTransformation->ruleLinesByParanoiaLevel[1][0]);
+        $this->assertSame([RuleFileTransformer::REASON_CHAINED => 1], $fileTransformation->droppedRuleCounts);
+    }
+
+    public function testDropsNonBlockingRules(): void
+    {
+        $fileTransformation = $this->transformer()->transform(
+            'SecRule ARGS "@rx a" "id:901001,phase:1,pass,t:none,setvar:tx.score=1"',
+        );
+
+        $this->assertSame(0, $fileTransformation->keptRuleCount());
+        $this->assertSame([RuleFileTransformer::REASON_NON_BLOCKING => 1], $fileTransformation->droppedRuleCounts);
+    }
+
+    public function testDropsUnsupportedOperators(): void
+    {
+        $fileTransformation = $this->transformer()->transform(
+            'SecRule ARGS "@detectSQLi anything" "id:942101,phase:2,block"',
+        );
+
+        $this->assertSame(0, $fileTransformation->keptRuleCount());
+        $this->assertSame([RuleFileTransformer::REASON_UNSUPPORTED_OPERATOR => 1], $fileTransformation->droppedRuleCounts);
+    }
+
+    public function testDropsRulesWhoseVariablesAreAllUnsupported(): void
+    {
+        $fileTransformation = $this->transformer()->transform(
+            'SecRule XML:/*|REQUEST_BODY "@rx scanner" "id:913100,phase:1,block"',
+        );
+
+        $this->assertSame(0, $fileTransformation->keptRuleCount());
+        $this->assertSame([RuleFileTransformer::REASON_UNSUPPORTED_VARIABLES => 1], $fileTransformation->droppedRuleCounts);
+    }
+
+    public function testKeepsRulesTargetingOnlyANamedHeaderSelector(): void
+    {
+        $fileTransformation = $this->transformer()->transform(
+            'SecRule REQUEST_HEADERS:User-Agent "@rx scanner" "id:913100,phase:1,block"',
+        );
+
+        $this->assertSame(1, $fileTransformation->keptRuleCount(), 'Named header selectors are collectable targets');
+    }
+
+    public function testDropsRulesWhoseOnlySelectorsAreNegated(): void
+    {
+        $fileTransformation = $this->transformer()->transform(
+            'SecRule !REQUEST_HEADERS:Cookie "@rx evil" "id:913101,phase:1,block"',
+        );
+
+        $this->assertSame(0, $fileTransformation->keptRuleCount(), 'A negated selector alone collects nothing');
+        $this->assertSame([RuleFileTransformer::REASON_UNSUPPORTED_VARIABLES => 1], $fileTransformation->droppedRuleCounts);
+    }
+
+    public function testKeepsRulesWithAtLeastOneSupportedVariable(): void
+    {
+        $fileTransformation = $this->transformer()->transform(
+            'SecRule REQUEST_COOKIES|!REQUEST_COOKIES:/__utm/|ARGS "@rx evil" "id:942200,phase:2,block"',
+        );
+
+        $this->assertSame(1, $fileTransformation->keptRuleCount());
+    }
+
+    public function testTalliesKeptRulesBySeverity(): void
+    {
+        $fileTransformation = $this->transformer()->transform(
+            'SecRule ARGS "@rx one" "id:942300,phase:2,block,severity:\'CRITICAL\'"' . "\n"
+            . 'SecRule ARGS "@rx two" "id:942301,phase:2,block,severity:\'WARNING\'"' . "\n"
+            . 'SecRule ARGS "@rx three" "id:942302,phase:2,block,severity:\'WARNING\'"' . "\n"
+            . 'SecRule ARGS "@rx four" "id:942303,phase:2,block"',
+        );
+
+        $this->assertSame(
+            ['CRITICAL' => 1, 'NONE' => 1, 'WARNING' => 2],
+            $fileTransformation->keptRuleCountsBySeverity,
+        );
+    }
+
+    public function testRemapsRequestUriRawToTheSupportedRequestUriTarget(): void
+    {
+        $fileTransformation = $this->transformer()->transform(
+            'SecRule REQUEST_URI_RAW|ARGS "@rx \.\./" "id:930111,phase:1,block"',
+        );
+
+        $storedLine = $fileTransformation->ruleLinesByParanoiaLevel[1][0];
+        $this->assertStringContainsString('REQUEST_URI|ARGS', $storedLine);
+        $this->assertStringNotContainsString('REQUEST_URI_RAW', $storedLine);
+    }
+
+    public function testKeepsARequestUriRawOnlyRuleThatWouldOtherwiseBeUnsupported(): void
+    {
+        $fileTransformation = $this->transformer()->transform(
+            'SecRule REQUEST_URI_RAW "@rx \.\./" "id:930112,phase:1,block"',
+        );
+
+        $this->assertSame(1, $fileTransformation->keptRuleCount(), 'REQUEST_URI_RAW is remapped to the supported REQUEST_URI');
+        $this->assertStringContainsString('SecRule REQUEST_URI ', $fileTransformation->ruleLinesByParanoiaLevel[1][0]);
+    }
+
+    public function testLeavesLiteralRequestUriRawInsideThePatternUntouched(): void
+    {
+        $fileTransformation = $this->transformer()->transform(
+            'SecRule ARGS "@rx REQUEST_URI_RAW" "id:930113,phase:1,block"',
+        );
+
+        $this->assertStringContainsString('@rx REQUEST_URI_RAW', $fileTransformation->ruleLinesByParanoiaLevel[1][0]);
+    }
+
+    public function testInjectsCaseInsensitiveFlagIntoLowercasedRegexRules(): void
+    {
+        $fileTransformation = $this->transformer()->transform(
+            'SecRule ARGS "@rx java\b" "id:944240,phase:2,block,t:none,t:lowercase"',
+        );
+
+        $this->assertStringContainsString('"@rx (?i)java\b"', $fileTransformation->ruleLinesByParanoiaLevel[1][0]);
+    }
+
+    public function testDoesNotInjectCaseInsensitiveFlagWithoutTheLowercaseTransform(): void
+    {
+        $fileTransformation = $this->transformer()->transform(
+            'SecRule ARGS "@rx java\b" "id:944241,phase:2,block,t:none"',
+        );
+
+        $storedLine = $fileTransformation->ruleLinesByParanoiaLevel[1][0];
+        $this->assertStringContainsString('"@rx java\b"', $storedLine);
+        $this->assertStringNotContainsString('(?i)', $storedLine);
+    }
+
+    public function testDoesNotDoubleInjectWhenThePatternIsAlreadyCaseInsensitive(): void
+    {
+        $fileTransformation = $this->transformer()->transform(
+            'SecRule ARGS "@rx (?i)java\b" "id:944242,phase:2,block,t:none,t:lowercase"',
+        );
+
+        $storedLine = $fileTransformation->ruleLinesByParanoiaLevel[1][0];
+        $this->assertStringContainsString('"@rx (?i)java\b"', $storedLine);
+        $this->assertStringNotContainsString('(?i)(?i)', $storedLine);
+    }
+
+    public function testInjectsCaseInsensitiveFlagAheadOfANonCaseModifierGroup(): void
+    {
+        $fileTransformation = $this->transformer()->transform(
+            'SecRule ARGS "@rx (?:java|scala)\b" "id:944244,phase:2,block,t:none,t:lowercase"',
+        );
+
+        // A leading non-capturing group does not set the case-insensitive flag, so (?i) is prepended.
+        $this->assertStringContainsString('"@rx (?i)(?:java|scala)\b"', $fileTransformation->ruleLinesByParanoiaLevel[1][0]);
+    }
+
+    public function testDoesNotInjectCaseInsensitiveFlagForNonRegexOperators(): void
+    {
+        $fileTransformation = $this->transformer()->transform(
+            'SecRule ARGS "@contains java" "id:944243,phase:2,block,t:none,t:lowercase"',
+        );
+
+        $this->assertStringNotContainsString('(?i)', $fileTransformation->ruleLinesByParanoiaLevel[1][0]);
+    }
+
+    public function testDropsRulesWithoutAnId(): void
+    {
+        $fileTransformation = $this->transformer()->transform(
+            'SecRule ARGS "@rx evil" "phase:2,block"',
+        );
+
+        $this->assertSame(0, $fileTransformation->keptRuleCount());
+        $this->assertSame([RuleFileTransformer::REASON_UNPARSEABLE => 1], $fileTransformation->droppedRuleCounts);
+    }
+
+    public function testRecordsDataFilesReferencedByPmFromFileRules(): void
+    {
+        $fileTransformation = $this->transformer()->transform(
+            'SecRule REQUEST_FILENAME "@pmFromFile restricted-files.data" "id:930130,phase:1,block"',
+        );
+
+        $this->assertSame(1, $fileTransformation->keptRuleCount());
+        $this->assertSame(['restricted-files.data'], $fileTransformation->referencedDataFiles);
+    }
+
+    public function testIgnoresOtherDirectives(): void
+    {
+        $rulesText = <<<'CRS'
+        SecMarker "BEGIN-REQUEST-942"
+        SecAction "id:900000,phase:1,pass,setvar:tx.paranoia_level=1"
+        SecRule ARGS "@rx evil" "id:1,deny"
+        CRS;
+
+        $fileTransformation = $this->transformer()->transform($rulesText);
+
+        $this->assertSame(1, $fileTransformation->keptRuleCount());
+        $this->assertSame([], $fileTransformation->droppedRuleCounts);
+    }
+}

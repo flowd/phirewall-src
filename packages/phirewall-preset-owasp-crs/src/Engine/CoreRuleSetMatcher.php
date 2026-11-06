@@ -1,0 +1,602 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Flowd\PhirewallPresetOwaspCrs\Engine;
+
+use Flowd\Phirewall\Config\MatchResult;
+use Flowd\Phirewall\Config\RequestMatcherInterface;
+use Flowd\Phirewall\Matchers\CompiledDataCacheAware;
+use Flowd\Phirewall\Matchers\FailOpenAware;
+use Flowd\Phirewall\Support\CompiledDataCache;
+use Flowd\PhirewallPresetOwaspCrs\Engine\Exclusion\RuleExclusionParser;
+use Flowd\PhirewallPresetOwaspCrs\Engine\Variable\RequestValueManipulatorInterface;
+use Flowd\PhirewallPresetOwaspCrs\Engine\Variable\TargetExclusionConditionInterface;
+use Flowd\PhirewallPresetOwaspCrs\Engine\Variable\TargetSelector;
+use Flowd\PhirewallPresetOwaspCrs\ParanoiaLevel;
+use Flowd\PhirewallPresetOwaspCrs\RuleSetLoader;
+use Psr\Http\Message\ServerRequestInterface;
+use Psr\Log\LoggerInterface;
+
+/**
+ * Adapter that evaluates an OWASP CoreRuleSet against a PSR-7 request with
+ * anomaly scoring. Implements RequestMatcherInterface so it can be used as a
+ * Blocklist matcher or as a fail2ban filter; the request matches once its
+ * accumulated anomaly score reaches the configured threshold.
+ *
+ * Constructed via {@see fromRuleFiles()} the matcher parses the rule files
+ * lazily on first use and, when the evaluating Config carries a
+ * {@see CompiledDataCache}, loads the parsed rules from its compiled artifact
+ * instead of re-parsing on every request. Configuration calls (enable/disable,
+ * exclusions, manipulators) made before the first use are queued and applied
+ * once the rules are loaded; exclusions and manipulators are runtime tuning
+ * and never enter the compiled artifact. Constructed with an already parsed
+ * {@see CoreRuleSet} the matcher behaves eagerly and the compiled-data cache
+ * is not consulted.
+ *
+ * With a PSR-3 logger every rule match is logged at info level - including
+ * matches on requests that stay below the threshold and pass. Those
+ * sub-threshold entries are the tuning signal: they surface false-positive
+ * patterns (e.g. marketing parameters) before scores ever accumulate to a block.
+ */
+final class CoreRuleSetMatcher implements RequestMatcherInterface, CompiledDataCacheAware, FailOpenAware
+{
+    public const DEFAULT_ANOMALY_THRESHOLD = CoreRuleSet::DEFAULT_ANOMALY_THRESHOLD;
+
+    /**
+     * Format version of the compiled rule data. Bump whenever
+     * {@see CoreRule::toArray()} / {@see CoreRule::fromArray()} change the
+     * artifact shape, so an upgrade rebuilds stale artifacts instead of
+     * hydrating an incompatible one.
+     */
+    private const COMPILED_SCHEMA_VERSION = 2;
+
+    /** Diagnostic-header bound: more matched rule ids are summarized as ',+N'. */
+    private const MAX_RULE_IDS_IN_HEADER = 10;
+
+    private ?CompiledDataCache $compiledDataCache = null;
+
+    /** Fail-open default, matching {@see \Flowd\Phirewall\Config::isFailOpen()}. */
+    private bool $failOpen = true;
+
+    private ParanoiaLevel $paranoiaLevel = ParanoiaLevel::Level1;
+
+    private ?string $rulesDirectory = null;
+
+    private ?int $maxValuesPerCrsVariable = null;
+
+    /** @var list<\Closure(CoreRuleSet): void> Configuration queued until the rule set is loaded. */
+    private array $pendingConfiguration = [];
+
+    /** @var array<string, true> Exclusion tags awaiting validation against the loaded rules. */
+    private array $exclusionTagsToValidate = [];
+
+    /**
+     * @throws \InvalidArgumentException When $anomalyThreshold is not positive.
+     */
+    public function __construct(
+        private ?CoreRuleSet $coreRuleSet = null,
+        private readonly int $anomalyThreshold = self::DEFAULT_ANOMALY_THRESHOLD,
+        private readonly ?LoggerInterface $logger = null,
+    ) {
+        if ($anomalyThreshold < 1) {
+            throw new \InvalidArgumentException(
+                sprintf('$anomalyThreshold must be a positive integer, %d given.', $anomalyThreshold),
+            );
+        }
+    }
+
+    /**
+     * Defer parsing to the first use; the rules for the paranoia level are
+     * loaded from the compiled-data cache of the evaluating Config when one
+     * is configured.
+     */
+    public static function fromRuleFiles(
+        ParanoiaLevel $paranoiaLevel = ParanoiaLevel::Level1,
+        ?string $rulesDirectory = null,
+        ?int $maxValuesPerCrsVariable = null,
+        int $anomalyThreshold = self::DEFAULT_ANOMALY_THRESHOLD,
+        ?LoggerInterface $logger = null,
+    ): self {
+        $matcher = new self(null, $anomalyThreshold, $logger);
+        $matcher->paranoiaLevel = $paranoiaLevel;
+        $matcher->rulesDirectory = $rulesDirectory;
+        $matcher->maxValuesPerCrsVariable = $maxValuesPerCrsVariable;
+
+        return $matcher;
+    }
+
+    public function useCompiledDataCache(CompiledDataCache $compiledDataCache): void
+    {
+        $this->compiledDataCache = $compiledDataCache;
+    }
+
+    public function useFailOpen(bool $failOpen): void
+    {
+        $this->failOpen = $failOpen;
+    }
+
+    public function match(ServerRequestInterface $serverRequest): MatchResult
+    {
+        $coreRuleSet = $this->coreRuleSet();
+
+        try {
+            $evaluation = $coreRuleSet->evaluate($serverRequest, $this->anomalyThreshold);
+        } catch (\Throwable $throwable) {
+            // An engine-internal fault at evaluation time (e.g. a manipulator throwing).
+            // Honor the deployment's failure policy: fail-open rethrows so the core's
+            // Config/Middleware policy and its FirewallError event still govern; fail-closed
+            // blocks here so the fault cannot silently disable protection for the request.
+            if ($this->failOpen) {
+                throw $throwable;
+            }
+
+            $this->logger?->warning('OWASP CRS evaluation failed; blocking (fail-closed)', [
+                'error' => LogDataExpander::sanitize($throwable->getMessage(), LogDataExpander::MAX_RESULT_LENGTH),
+                'method' => LogDataExpander::sanitize($serverRequest->getMethod()),
+                'path' => LogDataExpander::sanitize($serverRequest->getUri()->getPath(), LogDataExpander::MAX_RESULT_LENGTH),
+            ]);
+
+            return MatchResult::matched('owasp', [
+                'owasp_anomaly_threshold' => $this->anomalyThreshold,
+                'owasp_fail_closed' => true,
+            ]);
+        }
+
+        $this->logEvaluation($serverRequest, $evaluation);
+
+        $firstMatch = $evaluation->firstMatch();
+        if (!$evaluation->isBlocked() || !$firstMatch instanceof RuleMatch) {
+            return MatchResult::noMatch();
+        }
+
+        // diagnostic_headers drives the X-Phirewall-Owasp-* response headers
+        // via Config::enableDiagnosticsHeaders(); the owasp_* keys are
+        // structured metadata for event listeners reading the MatchResult.
+        $meta = [
+            'owasp_anomaly_score' => $evaluation->totalScore,
+            'owasp_anomaly_threshold' => $evaluation->anomalyThreshold,
+            'owasp_rule_ids' => implode(',', $evaluation->matchedRuleIds()),
+            'owasp_rule_id' => $firstMatch->ruleId,
+            'diagnostic_headers' => [
+                'X-Phirewall-Owasp-Rule' => $this->headerRuleIds($evaluation),
+                'X-Phirewall-Owasp-Score' => $evaluation->totalScore . '/' . $evaluation->anomalyThreshold,
+            ],
+        ];
+        if ($firstMatch->message !== null) {
+            $meta['msg'] = $firstMatch->message;
+        }
+
+        // The matched target label (e.g. REQUEST_HEADERS:User-Agent) carries an
+        // attacker-controlled member name: sanitize it like the PSR-3 log context.
+        if ($firstMatch->matchedVariableName !== null) {
+            $meta['owasp_matched_variable'] = LogDataExpander::sanitize($firstMatch->matchedVariableName);
+        }
+
+        // Already log-safe: sanitized, length-bounded and redacted for credential targets.
+        if ($firstMatch->matchedValue !== null) {
+            $meta['owasp_matched_value'] = $firstMatch->matchedValue;
+        }
+
+        if ($firstMatch->logData !== null) {
+            $meta['owasp_log_data'] = $firstMatch->logData;
+        }
+
+        if ($evaluation->failClosed) {
+            $meta['owasp_fail_closed'] = true;
+        }
+
+        return MatchResult::matched('owasp', $meta);
+    }
+
+    public function enable(int $id): self
+    {
+        $this->configure(static function (CoreRuleSet $coreRuleSet) use ($id): void {
+            $coreRuleSet->enable($id);
+        });
+
+        return $this;
+    }
+
+    public function disable(int $id): self
+    {
+        $this->configure(static function (CoreRuleSet $coreRuleSet) use ($id): void {
+            $coreRuleSet->disable($id);
+        });
+
+        return $this;
+    }
+
+    public function isEnabled(int $id): bool
+    {
+        return $this->coreRuleSet()->isEnabled($id);
+    }
+
+    /**
+     * Exclude a target from inspection by every rule; see {@see CoreRuleSet::excludeTarget()}.
+     *
+     * @param TargetExclusionConditionInterface|\Closure(string, ?string, string, ServerRequestInterface): bool|null $when Receives (variable, name, value, request)
+     *
+     * @throws \InvalidArgumentException When the selector form is unsupported.
+     */
+    public function excludeTarget(string $selector, TargetExclusionConditionInterface|\Closure|null $when = null): self
+    {
+        TargetSelector::parseExclusion($selector); // validate eagerly, even when queued
+        $this->configure(static function (CoreRuleSet $coreRuleSet) use ($selector, $when): void {
+            $coreRuleSet->excludeTarget($selector, $when);
+        });
+
+        return $this;
+    }
+
+    /**
+     * Exclude a target from inspection by one rule; see {@see CoreRuleSet::excludeTargetById()}.
+     *
+     * @param TargetExclusionConditionInterface|\Closure(string, ?string, string, ServerRequestInterface): bool|null $when Receives (variable, name, value, request)
+     *
+     * @throws \InvalidArgumentException When the selector form is unsupported.
+     */
+    public function excludeTargetById(int $ruleId, string $selector, TargetExclusionConditionInterface|\Closure|null $when = null): self
+    {
+        TargetSelector::parseExclusion($selector); // validate eagerly, even when queued
+        $this->configure(static function (CoreRuleSet $coreRuleSet) use ($ruleId, $selector, $when): void {
+            $coreRuleSet->excludeTargetById($ruleId, $selector, $when);
+        });
+
+        return $this;
+    }
+
+    /**
+     * Exclude a target from rules carrying a tag; see {@see CoreRuleSet::excludeTargetByTag()}.
+     * A tag that no loaded rule carries logs a PSR-3 warning once the rules are loaded.
+     *
+     * @param TargetExclusionConditionInterface|\Closure(string, ?string, string, ServerRequestInterface): bool|null $when Receives (variable, name, value, request)
+     *
+     * @throws \InvalidArgumentException When the selector form is unsupported.
+     */
+    public function excludeTargetByTag(string $tag, string $selector, TargetExclusionConditionInterface|\Closure|null $when = null): self
+    {
+        TargetSelector::parseExclusion($selector); // validate eagerly, even when queued
+        $this->configure(static function (CoreRuleSet $coreRuleSet) use ($tag, $selector, $when): void {
+            $coreRuleSet->excludeTargetByTag($tag, $selector, $when);
+        });
+        $this->recordExclusionTags($tag);
+
+        return $this;
+    }
+
+    /**
+     * Apply CRS rule-exclusion syntax; see {@see CoreRuleSet::applyRuleExclusions()}.
+     *
+     * @param ?string $contextFolder Confines `@pmFromFile` operands of exclusion rule conditions
+     *
+     * @throws \InvalidArgumentException When a line is malformed or uses an unsupported exclusion form.
+     */
+    public function applyRuleExclusions(string $rulesText, ?string $contextFolder = null): self
+    {
+        $parsed = (new RuleExclusionParser())->parse($rulesText, $contextFolder); // validate eagerly, even when queued
+        $this->configure(static function (CoreRuleSet $coreRuleSet) use ($rulesText, $contextFolder): void {
+            $coreRuleSet->applyRuleExclusions($rulesText, $contextFolder);
+        });
+
+        $tags = [];
+        foreach ($parsed->directives as $directive) {
+            if ($directive->tag !== null) {
+                $tags[] = $directive->tag;
+            }
+        }
+
+        foreach ($parsed->exclusionRules as $exclusionRule) {
+            foreach ($exclusionRule->exclusions as $ctlExclusion) {
+                if ($ctlExclusion->tag !== null) {
+                    $tags[] = $ctlExclusion->tag;
+                }
+            }
+        }
+
+        $this->recordExclusionTags(...$tags);
+
+        return $this;
+    }
+
+    /**
+     * Apply CRS rule-exclusion syntax from a file; see {@see CoreRuleSet::applyRuleExclusions()}.
+     * The file is read eagerly, so a missing or unreadable file fails at configuration time.
+     *
+     * @throws \InvalidArgumentException When the file is missing, malformed or uses an unsupported exclusion form.
+     * @throws \RuntimeException When the file cannot be read.
+     */
+    public function applyRuleExclusionsFromFile(string $filePath): self
+    {
+        if (!is_file($filePath)) {
+            throw new \InvalidArgumentException('Rule exclusion file not found: ' . $filePath);
+        }
+
+        // Confine @pmFromFile resolution to the exclusion file's own directory,
+        // mirroring SecRuleLoader::fromFile().
+        $resolvedPath = realpath($filePath);
+        $contextFolder = dirname($resolvedPath !== false ? $resolvedPath : $filePath);
+
+        $rulesText = @file_get_contents($filePath);
+        if ($rulesText === false) {
+            throw new \RuntimeException('Cannot read rule exclusion file: ' . $filePath);
+        }
+
+        return $this->applyRuleExclusions($rulesText, $contextFolder);
+    }
+
+    /**
+     * Register a global manipulator; see {@see CoreRuleSet::addManipulator()}.
+     *
+     * @param RequestValueManipulatorInterface|\Closure(string, ?string, string, ServerRequestInterface): string $manipulator
+     */
+    public function addManipulator(RequestValueManipulatorInterface|\Closure $manipulator): self
+    {
+        $this->configure(static function (CoreRuleSet $coreRuleSet) use ($manipulator): void {
+            $coreRuleSet->addManipulator($manipulator);
+        });
+
+        return $this;
+    }
+
+    /**
+     * Register a per-rule manipulator; see {@see CoreRuleSet::addManipulatorById()}.
+     *
+     * @param RequestValueManipulatorInterface|\Closure(string, ?string, string, ServerRequestInterface): string $manipulator
+     */
+    public function addManipulatorById(int $ruleId, RequestValueManipulatorInterface|\Closure $manipulator): self
+    {
+        $this->configure(static function (CoreRuleSet $coreRuleSet) use ($ruleId, $manipulator): void {
+            $coreRuleSet->addManipulatorById($ruleId, $manipulator);
+        });
+
+        return $this;
+    }
+
+    /**
+     * Set the per-value inspection length; see {@see CoreRuleSet::setMaxInspectableValueLength()}.
+     *
+     * @throws \InvalidArgumentException When $bytes is not positive.
+     */
+    public function setMaxInspectableValueLength(int $bytes): self
+    {
+        if ($bytes < 1) {
+            throw new \InvalidArgumentException(
+                sprintf('$bytes must be a positive integer, %d given.', $bytes),
+            );
+        }
+
+        $this->configure(static function (CoreRuleSet $coreRuleSet) use ($bytes): void {
+            $coreRuleSet->setMaxInspectableValueLength($bytes);
+        });
+
+        return $this;
+    }
+
+    /**
+     * Apply a configuration step now, or queue it until the rule set is loaded.
+     *
+     * @param \Closure(CoreRuleSet): void $configuration
+     */
+    private function configure(\Closure $configuration): void
+    {
+        if ($this->coreRuleSet instanceof CoreRuleSet) {
+            $configuration($this->coreRuleSet);
+            return;
+        }
+
+        $this->pendingConfiguration[] = $configuration;
+    }
+
+    /**
+     * Remember tags referenced by exclusions; validated against the rules once
+     * they are loaded (immediately when they already are).
+     */
+    private function recordExclusionTags(string ...$tags): void
+    {
+        foreach ($tags as $tag) {
+            $this->exclusionTagsToValidate[$tag] = true;
+        }
+
+        if ($this->coreRuleSet instanceof CoreRuleSet) {
+            $this->warnAboutUnknownExclusionTags($this->coreRuleSet);
+        }
+    }
+
+    /**
+     * Warn once per registered exclusion tag that no loaded rule carries: such
+     * an exclusion never applies (e.g. a CRS 3 tag against the CRS 4 snapshot).
+     */
+    private function warnAboutUnknownExclusionTags(CoreRuleSet $coreRuleSet): void
+    {
+        if ($this->exclusionTagsToValidate === []) {
+            return;
+        }
+
+        $unknownTags = $this->exclusionTagsToValidate;
+        $this->exclusionTagsToValidate = [];
+
+        if (!$this->logger instanceof LoggerInterface) {
+            return;
+        }
+
+        // Cross tags off as rules carry them; once none are left the scan stops
+        // early, so a valid configuration never walks the whole rule set.
+        foreach ($coreRuleSet->ids() as $id) {
+            $rule = $coreRuleSet->getRule($id);
+            if (!$rule instanceof CoreRule) {
+                continue;
+            }
+
+            foreach ($rule->tags as $loadedTag) {
+                unset($unknownTags[$loadedTag]);
+            }
+
+            if ($unknownTags === []) {
+                return;
+            }
+        }
+
+        foreach (array_keys($unknownTags) as $tag) {
+            $this->logger->warning('OWASP CRS exclusion tag {tag} matches no loaded rule; the exclusion never applies', [
+                'tag' => $tag,
+            ]);
+        }
+    }
+
+    private function headerRuleIds(RuleSetEvaluation $ruleSetEvaluation): string
+    {
+        $ruleIds = $ruleSetEvaluation->matchedRuleIds();
+        if (count($ruleIds) <= self::MAX_RULE_IDS_IN_HEADER) {
+            return implode(',', $ruleIds);
+        }
+
+        $overflow = count($ruleIds) - self::MAX_RULE_IDS_IN_HEADER;
+
+        return implode(',', array_slice($ruleIds, 0, self::MAX_RULE_IDS_IN_HEADER)) . ',+' . $overflow;
+    }
+
+    /**
+     * Log every rule match at info level - including sub-threshold matches on
+     * requests that pass (the tuning signal) - and the block decision at
+     * warning level. Log data is expanded and sanitized by the rule set.
+     */
+    private function logEvaluation(ServerRequestInterface $serverRequest, RuleSetEvaluation $ruleSetEvaluation): void
+    {
+        if (!$this->logger instanceof LoggerInterface || $ruleSetEvaluation->ruleMatches === []) {
+            return;
+        }
+
+        // method, path and matched_variable all carry attacker-controlled input
+        // (request line, URI, member name): sanitize each like log_data (control
+        // characters, length bound) so a crafted request cannot inject or inflate
+        // log lines. matched_value and log_data arrive already log-safe from the
+        // rule match: sanitized, length-bounded and redacted for credential targets.
+        $method = LogDataExpander::sanitize($serverRequest->getMethod());
+        $path = LogDataExpander::sanitize($serverRequest->getUri()->getPath(), LogDataExpander::MAX_RESULT_LENGTH);
+
+        foreach ($ruleSetEvaluation->ruleMatches as $ruleMatch) {
+            $this->logger->info('OWASP CRS rule {rule_id} matched', [
+                'rule_id' => $ruleMatch->ruleId,
+                'severity' => $ruleMatch->severity,
+                'anomaly_score' => $ruleMatch->anomalyScore,
+                'paranoia_level' => $ruleMatch->paranoiaLevel,
+                'matched_variable' => $ruleMatch->matchedVariableName !== null
+                    ? LogDataExpander::sanitize($ruleMatch->matchedVariableName)
+                    : null,
+                'matched_value' => $ruleMatch->matchedValue,
+                'log_data' => $ruleMatch->logData,
+                'msg' => $ruleMatch->message,
+                'fail_closed' => $ruleMatch->failClosed,
+                'method' => $method,
+                'path' => $path,
+            ]);
+        }
+
+        if ($ruleSetEvaluation->isBlocked()) {
+            $this->logger->warning('OWASP CRS anomaly threshold reached', [
+                'total_score' => $ruleSetEvaluation->totalScore,
+                'anomaly_threshold' => $ruleSetEvaluation->anomalyThreshold,
+                'rule_ids' => $ruleSetEvaluation->matchedRuleIds(),
+                'fail_closed' => $ruleSetEvaluation->failClosed,
+                'method' => $method,
+                'path' => $path,
+            ]);
+        }
+    }
+
+    /**
+     * Resolve the rule set, loading it and applying queued configuration on first use.
+     */
+    private function coreRuleSet(): CoreRuleSet
+    {
+        if ($this->coreRuleSet instanceof CoreRuleSet) {
+            return $this->coreRuleSet;
+        }
+
+        $coreRuleSet = $this->loadRuleSet();
+        foreach ($this->pendingConfiguration as $configuration) {
+            $configuration($coreRuleSet);
+        }
+
+        $this->pendingConfiguration = [];
+        $this->coreRuleSet = $coreRuleSet;
+        $this->warnAboutUnknownExclusionTags($coreRuleSet);
+
+        return $coreRuleSet;
+    }
+
+    private function loadRuleSet(): CoreRuleSet
+    {
+        $rulesDirectory = $this->rulesDirectory ?? RuleSetLoader::defaultRulesDirectory();
+
+        if (!$this->compiledDataCache instanceof CompiledDataCache) {
+            return RuleSetLoader::load($this->paranoiaLevel, $rulesDirectory, $this->maxValuesPerCrsVariable);
+        }
+
+        $ruleFiles = RuleSetLoader::ruleFiles($this->paranoiaLevel, $rulesDirectory);
+        // The file list is part of the identifier so removing a rule file
+        // rebuilds even when the newest mtime stays the same.
+        $identifier = sprintf(
+            'owasp-crs-v%d-pl%d-%s',
+            self::COMPILED_SCHEMA_VERSION,
+            $this->paranoiaLevel->value,
+            substr(sha1(implode('|', $ruleFiles)), 0, 12),
+        );
+
+        $paranoiaLevel = $this->paranoiaLevel;
+        // Parse with the same parameters as the non-cached path, so an invalid
+        // cap fails here (before an artifact is written) instead of only at
+        // hydration.
+        $maxValuesPerCrsVariable = $this->maxValuesPerCrsVariable;
+        $ruleData = $this->compiledDataCache->load($identifier, $ruleFiles, static function () use ($paranoiaLevel, $rulesDirectory, $maxValuesPerCrsVariable): array {
+            $parsed = RuleSetLoader::load($paranoiaLevel, $rulesDirectory, $maxValuesPerCrsVariable);
+            $rules = [];
+            foreach ($parsed->ids() as $id) {
+                $rule = $parsed->getRule($id);
+                if ($rule instanceof CoreRule) {
+                    $rules[] = $rule->toArray();
+                }
+            }
+
+            return $rules;
+        });
+
+        $coreRuleSet = $this->hydrate($ruleData);
+        if (!$coreRuleSet instanceof CoreRuleSet || ($ruleFiles !== [] && $coreRuleSet->ids() === [])) {
+            // The artifact is not a list of well-formed rule arrays, or it
+            // hydrated to zero rules despite the source having rule files (a
+            // truncated/corrupt artifact) - both fail-open for a blocklist.
+            // Reparse the source instead.
+            return RuleSetLoader::load($this->paranoiaLevel, $rulesDirectory, $this->maxValuesPerCrsVariable);
+        }
+
+        return $coreRuleSet;
+    }
+
+    /**
+     * Hydrate cached rule data into a CoreRuleSet, or null when the payload is
+     * not a list of well-formed rule arrays (a non-array entry, or one that
+     * {@see CoreRule::fromArray()} rejects). It does not detect a well-formed
+     * but under-populated payload.
+     *
+     * @param array<mixed> $ruleData
+     */
+    private function hydrate(array $ruleData): ?CoreRuleSet
+    {
+        $coreRuleSet = new CoreRuleSet([], $this->maxValuesPerCrsVariable);
+        foreach ($ruleData as $ruleArray) {
+            if (!is_array($ruleArray)) {
+                return null;
+            }
+
+            try {
+                $coreRuleSet->add(CoreRule::fromArray($ruleArray));
+            } catch (\Throwable) {
+                return null;
+            }
+        }
+
+        return $coreRuleSet;
+    }
+}
