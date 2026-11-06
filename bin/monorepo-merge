@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+#
+# Merge the package composer.json files into the root composer.json.
+#
+# monorepo-builder drops "extra.branch-alias" from the root on purpose. Our root
+# replaces every package with "self.version", so it needs the same alias as the
+# packages, otherwise their ">=x.y <1.0" constraints cannot be satisfied locally.
+# The alias is therefore copied back from the core package after the merge.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+vendor/bin/monorepo-builder merge
+
+alias="$(jq -r '.extra["branch-alias"]["dev-main"]' packages/phirewall/composer.json)"
+if [[ -z "$alias" || "$alias" == "null" ]]; then
+    echo "packages/phirewall/composer.json has no extra.branch-alias.dev-main" >&2
+    exit 1
+fi
+
+tmp="$(mktemp)"
+jq --arg alias "$alias" '.extra["branch-alias"]["dev-main"] = $alias' composer.json > "$tmp"
+mv "$tmp" composer.json
+echo "Root branch alias: dev-main => $alias"

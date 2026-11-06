@@ -1,0 +1,104 @@
+{
+  "name": "flowd/phirewall-src",
+  "description": "Development monorepo of the Phirewall PHP firewall packages",
+  "type": "project",
+  "license": [
+    "LGPL-3.0-or-later",
+    "proprietary"
+  ],
+  "require": {
+    "php": ">=8.2",
+    "psr/event-dispatcher": "^1.0",
+    "psr/http-factory": "^1.1",
+    "psr/http-message": "^1.1 || ^2.0",
+    "psr/http-server-handler": "^1.0",
+    "psr/http-server-middleware": "^1.0",
+    "psr/log": "^2.0 || ^3.0",
+    "psr/simple-cache": "^3.0"
+  },
+  "config": {
+    "sort-packages": true,
+    "allow-plugins": {
+      "infection/extension-installer": false
+    }
+  },
+  "require-dev": {
+    "friendsofphp/php-cs-fixer": "^3.89",
+    "infection/infection": "^0.29",
+    "mikey179/vfsstream": "^1.6",
+    "nyholm/psr7": "^1.8",
+    "phpstan/phpstan": "^1.12",
+    "phpunit/phpunit": "^11.5",
+    "rector/rector": "^1.2",
+    "symplify/monorepo-builder": "^12.7"
+  },
+  "authors": [
+    {
+      "name": "Sascha Egerer",
+      "email": "sascha.egerer@flowd.de",
+      "role": "Developer",
+      "homepage": "https://flowd.de"
+    }
+  ],
+  "autoload": {
+    "psr-4": {
+      "Flowd\\PhirewallPresetBadIps\\": "packages/phirewall-preset-bad-ips/src/",
+      "Flowd\\PhirewallPresetBots\\": "packages/phirewall-preset-bots/src/",
+      "Flowd\\PhirewallPresetOwaspCrs\\": "packages/phirewall-preset-owasp-crs/src/",
+      "Flowd\\Phirewall\\": "packages/phirewall/src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Flowd\\PhirewallPresetBadIps\\Tests\\": "packages/phirewall-preset-bad-ips/tests/",
+      "Flowd\\PhirewallPresetBots\\Tests\\": "packages/phirewall-preset-bots/tests/",
+      "Flowd\\PhirewallPresetOwaspCrs\\Tests\\": "packages/phirewall-preset-owasp-crs/tests/",
+      "Flowd\\Phirewall\\Tests\\": [
+        "packages/phirewall/tests/",
+        "packages/phirewall/tests/Unit/"
+      ]
+    }
+  },
+  "replace": {
+    "flowd/phirewall": "self.version",
+    "flowd/phirewall-preset-bad-ips": "self.version",
+    "flowd/phirewall-preset-bots": "self.version",
+    "flowd/phirewall-preset-owasp-crs": "self.version"
+  },
+  "scripts": {
+    "phpunit:core": "XDEBUG_MODE=off vendor/bin/phpunit --configuration packages/phirewall/phpunit.xml.dist --color=always --no-coverage",
+    "phpunit:owasp-crs": "XDEBUG_MODE=off vendor/bin/phpunit --configuration packages/phirewall-preset-owasp-crs/phpunit.xml.dist --color=always --no-coverage",
+    "phpunit:bots": "XDEBUG_MODE=off vendor/bin/phpunit --configuration packages/phirewall-preset-bots/phpunit.xml.dist --color=always --no-coverage",
+    "phpunit:bad-ips": "XDEBUG_MODE=off vendor/bin/phpunit --configuration packages/phirewall-preset-bad-ips/phpunit.xml.dist --color=always --no-coverage",
+    "phpunit": [
+      "@phpunit:core",
+      "@phpunit:owasp-crs",
+      "@phpunit:bots",
+      "@phpunit:bad-ips"
+    ],
+    "phpstan": "vendor/bin/phpstan",
+    "rector:check": "vendor/bin/rector --dry-run",
+    "rector:fix": "vendor/bin/rector",
+    "cs:check": "vendor/bin/php-cs-fixer fix --diff --dry-run --verbose",
+    "cs:fix": "vendor/bin/php-cs-fixer fix --diff --verbose",
+    "monorepo:merge": "bin/monorepo-merge",
+    "monorepo:validate": "monorepo-builder validate",
+    "test:database": "packages/phirewall/bin/test-databases.sh",
+    "fix": [
+      "@rector:fix",
+      "@cs:fix"
+    ],
+    "test": [
+      "@monorepo:validate",
+      "@rector:check",
+      "@cs:check",
+      "@phpstan",
+      "@phpunit"
+    ]
+  },
+  "extra": {
+    "branch-alias": {
+      "dev-main": "0.11.x-dev"
+    }
+  }
+}

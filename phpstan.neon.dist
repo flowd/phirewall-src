@@ -1,0 +1,18 @@
+parameters:
+  level: max
+  paths:
+    - packages/phirewall/src
+    - packages/phirewall/tests
+    - packages/phirewall-preset-bad-ips/src
+    - packages/phirewall-preset-bad-ips/tests
+    - packages/phirewall-preset-bots/src
+    - packages/phirewall-preset-bots/tests
+    - packages/phirewall-preset-owasp-crs/src
+    - packages/phirewall-preset-owasp-crs/tests
+  checkGenericClassInNonGenericObjectType: true
+  checkMissingIterableValueType: true
+  checkUninitializedProperties: true
+  reportUnmatchedIgnoredErrors: true
+  treatPhpDocTypesAsCertain: false
+includes:
+    - phar://vendor/phpstan/phpstan/phpstan.phar/conf/bleedingEdge.neon

@@ -1,8 +1,7 @@
 <?php
 
 $finder = (new PhpCsFixer\Finder())
-    ->in(__DIR__ . '/src')
-    ->in(__DIR__ . '/tests')
+    ->in(glob(__DIR__ . '/packages/*/{src,tests}', GLOB_BRACE))
 ;
 
 return (new PhpCsFixer\Config())

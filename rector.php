@@ -13,11 +13,11 @@ use Rector\Php55\Rector\String_\StringClassNameToClassConstantRector;
 use Rector\PHPUnit\PHPUnit60\Rector\ClassMethod\AddDoesNotPerformAssertionToNonAssertingTestRector;
 
 return RectorConfig::configure()
-    ->withPaths([
-        __DIR__ . '/examples',
-        __DIR__ . '/src',
-        __DIR__ . '/tests',
-    ])
+    ->withPaths(array_merge(
+        glob(__DIR__ . '/packages/*/examples', GLOB_ONLYDIR) ?: [],
+        glob(__DIR__ . '/packages/*/src', GLOB_ONLYDIR) ?: [],
+        glob(__DIR__ . '/packages/*/tests', GLOB_ONLYDIR) ?: [],
+    ))
     ->withPhpSets(php82: true)
     ->withPHPStanConfigs([
         __DIR__ . '/phpstan.neon.dist',
@@ -38,7 +38,7 @@ return RectorConfig::configure()
     )
     ->withSkip([
         StringClassNameToClassConstantRector::class => [
-            __DIR__ . '/src/Http/ResponseFactoryResolver.php',
+            __DIR__ . '/packages/phirewall/src/Http/ResponseFactoryResolver.php',
         ],
         RenamePropertyToMatchTypeRector::class,
         RenameVariableToMatchMethodCallReturnTypeRector::class,
@@ -46,7 +46,9 @@ return RectorConfig::configure()
         RecastingRemovalRector::class,
         EncapsedStringsToSprintfRector::class,
         AddDoesNotPerformAssertionToNonAssertingTestRector::class,
+        // The core only skips it for PdoCache, the extensions skip it everywhere.
         ThrowWithPreviousExceptionRector::class => [
-            __DIR__ . '/src/Store/PdoCache.php',
-        ]
+            __DIR__ . '/packages/phirewall/src/Store/PdoCache.php',
+            __DIR__ . '/packages/phirewall-preset-*',
+        ],
     ]);
