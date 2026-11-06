@@ -31,14 +31,34 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ref="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" --jq '.[0].head.ref // ""')"
-          echo "Pull request head ref: '${ref}'"
-          if [[ "$ref" =~ ^release/([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
-            echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          # Commits that do not mention a release are not looked at any further.
+          message="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}" --jq '.commit.message')"
+          version=""
+          if grep -qi 'release' <<< "$message"; then
+            # The pull request of a fresh push is not always linked to the commit yet, retry.
+            ref=""
+            for attempt in 1 2 3 4 5 6; do
+              ref="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" --jq '.[0].head.ref // ""')"
+              [[ -z "$ref" ]] || break
+              echo "No pull request linked to ${GITHUB_SHA} yet (attempt ${attempt}), waiting."
+              sleep 10
+            done
+            echo "Pull request head ref: '${ref}'"
+            if [[ "$ref" =~ ^release/([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+              version="${BASH_REMATCH[1]}"
+            elif [[ -z "$ref" && "$message" =~ (release/|[Rr]elease\ )([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+              # Still unlinked: fall back to the commit message ("Merge pull request ... from
+              # flowd/release/X.Y.Z", "Prepare release X.Y.Z" or the title "Release X.Y.Z").
+              version="${BASH_REMATCH[2]}"
+              echo "Version taken from the commit message."
+            fi
+          fi
+          if [[ -n "$version" ]]; then
+            echo "Release ${version}"
           else
             echo "Not a release commit."
-            echo "version=" >> "$GITHUB_OUTPUT"
           fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
 
   tag:
     name: Tag ${{ needs.detect.outputs.version }}
