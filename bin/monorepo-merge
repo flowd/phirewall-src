@@ -21,6 +21,6 @@ if [[ -z "$alias" || "$alias" == "null" ]]; then
 fi
 
 tmp="$(mktemp)"
-jq --arg alias "$alias" '.extra["branch-alias"]["dev-main"] = $alias' composer.json > "$tmp"
+jq --indent 4 --arg alias "$alias" '.extra["branch-alias"]["dev-main"] = $alias' composer.json > "$tmp"
 mv "$tmp" composer.json
 echo "Root branch alias: dev-main => $alias"

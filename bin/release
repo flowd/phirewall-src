@@ -200,7 +200,7 @@ vendor/bin/monorepo-builder bump-interdependency "$CONSTRAINT" >/dev/null
 # Branch alias of every package. The root alias is copied over by bin/monorepo-merge.
 for file in packages/*/composer.json; do
     tmp="$(mktemp)"
-    jq --arg alias "$NEXT_ALIAS" '.extra["branch-alias"]["dev-main"] = $alias' "$file" > "$tmp"
+    jq --indent 4 --arg alias "$NEXT_ALIAS" '.extra["branch-alias"]["dev-main"] = $alias' "$file" > "$tmp"
     mv "$tmp" "$file"
 done
 

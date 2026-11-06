@@ -1,59 +1,59 @@
 {
-  "name": "flowd/phirewall-preset-bad-ips",
-  "description": "Threat-intelligence IP blocklist preset for the Phirewall PHP firewall - bundles a public-domain bad-IP feed snapshot",
-  "type": "library",
-  "keywords": [
-    "firewall",
-    "ip-blocklist",
-    "threat-intel",
-    "ip-reputation",
-    "security",
-    "psr-15",
-    "psr-7"
-  ],
-  "license": [
-    "LGPL-3.0-or-later",
-    "proprietary"
-  ],
-  "authors": [
-    {
-      "name": "Sascha Egerer",
-      "email": "sascha.egerer@flowd.de",
-      "role": "Developer",
-      "homepage": "https://flowd.de"
+    "name": "flowd/phirewall-preset-bad-ips",
+    "description": "Threat-intelligence IP blocklist preset for the Phirewall PHP firewall - bundles a public-domain bad-IP feed snapshot",
+    "type": "library",
+    "keywords": [
+        "firewall",
+        "ip-blocklist",
+        "threat-intel",
+        "ip-reputation",
+        "security",
+        "psr-15",
+        "psr-7"
+    ],
+    "license": [
+        "LGPL-3.0-or-later",
+        "proprietary"
+    ],
+    "authors": [
+        {
+            "name": "Sascha Egerer",
+            "email": "sascha.egerer@flowd.de",
+            "role": "Developer",
+            "homepage": "https://flowd.de"
+        }
+    ],
+    "require": {
+        "php": ">=8.2",
+        "flowd/phirewall": ">=0.11 <1.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.5",
+        "nyholm/psr7": "^1.8",
+        "mikey179/vfsstream": "^1.6.8"
+    },
+    "autoload": {
+        "psr-4": {
+            "Flowd\\PhirewallPresetBadIps\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Flowd\\PhirewallPresetBadIps\\Tests\\": "tests/"
+        }
+    },
+    "bin": [
+        "bin/badip-import"
+    ],
+    "scripts": {
+        "phpunit": "XDEBUG_MODE=coverage vendor/bin/phpunit --color=always",
+        "badip:import": "@php bin/badip-import",
+        "test:phpt": "XDEBUG_MODE=off vendor/bin/phpunit --testsuite Integration --no-coverage",
+        "test": "@phpunit"
+    },
+    "extra": {
+        "branch-alias": {
+            "dev-main": "0.11.x-dev"
+        }
     }
-  ],
-  "require": {
-    "php": ">=8.2",
-    "flowd/phirewall": ">=0.11 <1.0"
-  },
-  "require-dev": {
-    "phpunit/phpunit": "^11.5",
-    "nyholm/psr7": "^1.8",
-    "mikey179/vfsstream": "^1.6.8"
-  },
-  "autoload": {
-    "psr-4": {
-      "Flowd\\PhirewallPresetBadIps\\": "src/"
-    }
-  },
-  "autoload-dev": {
-    "psr-4": {
-      "Flowd\\PhirewallPresetBadIps\\Tests\\": "tests/"
-    }
-  },
-  "bin": [
-    "bin/badip-import"
-  ],
-  "scripts": {
-    "phpunit": "XDEBUG_MODE=coverage vendor/bin/phpunit --color=always",
-    "badip:import": "@php bin/badip-import",
-    "test:phpt": "XDEBUG_MODE=off vendor/bin/phpunit --testsuite Integration --no-coverage",
-    "test": "@phpunit"
-  },
-  "extra": {
-    "branch-alias": {
-      "dev-main": "0.11.x-dev"
-    }
-  }
 }
