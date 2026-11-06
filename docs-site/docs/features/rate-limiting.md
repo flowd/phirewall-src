@@ -1,0 +1,418 @@
+---
+outline: deep
+---
+
+# Rate Limiting
+
+Phirewall provides rate limiting (throttling) that returns `429 Too Many Requests` when limits are exceeded. Throttle rules are evaluated after safelists, blocklists, and Fail2Ban, and before Allow2Ban.
+
+Three throttle strategies are available:
+
+| Strategy | Method | Best For |
+|----------|--------|----------|
+| **Fixed window** | `add()` | Simple, low-overhead counters |
+| **Sliding window** | `sliding()` | Smooth rate limits without double-burst |
+| **Multi-window** | `multi()` | Combined burst + sustained limits |
+
+::: tip Default key
+The `key` argument on `add()`, `sliding()`, and `multi()` is optional. When omitted, the throttle keys on the client IP resolved by the Config's IP resolver (set via `$config->setIpResolver((new TrustedProxyResolver([...]))->resolve(...))` behind a proxy), falling back to REMOTE_ADDR when none is set. The resolver is read per request, so it can be set before or after adding rules. The examples below omit `key:` to use this default; pass an explicit `key:` only to key on something other than the client IP (a header, a username, and so on).
+:::
+
+## Fixed Window Throttle
+
+The default strategy. Time is divided into fixed windows (e.g., 60-second intervals aligned to clock time) and each unique key gets a counter that resets at the end of the window.
+
+```php
+$config->throttles->add(
+    string $name,
+    int|Closure $limit,
+    int|Closure $period,
+    ?Closure $key = null,
+    ?Closure $scope = null
+): ThrottleSection
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `$name` | `string` | Unique rule identifier |
+| `$limit` | `int\|Closure` | Max requests per window, or a [dynamic closure](#dynamic-limits) |
+| `$period` | `int\|Closure` | Window size in seconds, or a [dynamic closure](#dynamic-limits) |
+| `$key` | `?Closure` | `fn(ServerRequestInterface): ?string`, return a key to group by, or `null` to skip. Omit to default to the client IP (Config IP resolver, else REMOTE_ADDR). |
+| `$scope` | `?Closure` | `fn(ServerRequestInterface): bool`, restricts which requests the throttle counts; non-matching requests skip the rule. Omit to count every request. |
+
+```php
+// 100 requests per minute per IP
+$config->throttles->add('ip-limit', limit: 100, period: 60);
+
+// Path-scoped: only /search requests count, still per client IP
+$config->throttles->add('search', limit: 10, period: 60,
+    scope: fn($req) => $req->getUri()->getPath() === '/search',
+);
+```
+
+Use `scope` to apply a throttle conditionally, only to certain paths, methods, or user types: the key stays omitted, so matching requests are counted per resolved client IP. A key closure that returns `null` also skips the rule for that request; reach for that form only when the rule keys on something other than the client IP (a header, a username, and so on).
+
+```text
+Window 1 (00:00-00:59)    Window 2 (01:00-01:59)    Window 3 (02:00-02:59)
+[|||||||||  ] 9/10 OK     [||||||||||x] 11/10 BLOCK  [|||       ] 3/10 OK
+```
+
+::: warning
+Fixed-window rate limiting has a known edge case: a burst of requests at the boundary of two windows could allow up to 2x the configured limit in a short period. Use `sliding()` or `multi()` if you need stricter guarantees.
+:::
+
+## Sliding Window Throttle
+
+The sliding window strategy prevents the "double burst" problem at window boundaries. It uses a weighted average of the current and previous window counters to produce a smooth rate estimate.
+
+```php
+$config->throttles->sliding(
+    string $name,
+    int|Closure $limit,
+    int|Closure $period,
+    ?Closure $key = null,
+    ?Closure $scope = null
+): ThrottleSection
+```
+
+The parameters are identical to `add()`. The only difference is the algorithm used.
+
+```php
+// Sliding window: 10 requests per 60 seconds per IP
+$config->throttles->sliding(
+    name: 'api-sliding',
+    limit: 10,
+    period: 60,
+);
+```
+
+### How It Works
+
+The sliding window calculates a weighted estimate using the current and previous window:
+
+```
+estimate = previousCount * (1 - elapsed/period) + currentCount
+```
+
+This means if a client sends 10 requests at the end of one window, the estimate at the start of the next window will still be close to 10 (rather than resetting to 0), preventing the double-burst:
+
+```text
+Fixed window:   10 requests at T=59s + 10 at T=61s = 20 in 2 seconds (allowed!)
+Sliding window: 10 requests at T=59s + 1 at T=61s = ~10.83 (blocked!)
+```
+
+::: tip
+Use sliding windows for public APIs and any endpoint where consistent rate enforcement matters. The slight additional overhead (one extra cache read for the previous window) is negligible.
+:::
+
+## Multi-Window Throttle
+
+The `multi()` method registers multiple throttle windows under a single logical name, combining burst protection with sustained rate limiting.
+
+```php
+$config->throttles->multi(
+    string $name,
+    array $windowLimits,
+    ?Closure $key = null,
+    ?Closure $scope = null
+): ThrottleSection
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `$name` | `string` | Logical name prefix |
+| `$windowLimits` | `array<int, int>` | Map of period (seconds) => limit (max requests) |
+| `$key` | `?Closure` | Key extractor closure (shared across all windows). Omit to default to the client IP (Config IP resolver, else REMOTE_ADDR). |
+| `$scope` | `?Closure` | Scope filter (shared across all windows); non-matching requests skip every window. |
+
+Each entry creates a sub-rule named `{$name}:{$period}s`. Windows are evaluated shortest-first (burst before sustained).
+
+```php
+// 3 req/s burst + 60 req/min sustained
+$config->throttles->multi('api', [
+    1  => 3,    // "api:1s" - burst protection
+    60 => 60,   // "api:60s" - sustained throughput
+]);
+```
+
+A request is blocked if it exceeds **any** of the windows. This catches both rapid-fire bursts and slow-and-steady abuse.
+
+### Practical Multi-Window Examples
+
+```php
+// API with generous sustained limits but strict burst protection
+$config->throttles->multi('public-api', [
+    1   => 5,      // 5 req/s burst
+    60  => 200,    // 200 req/min sustained
+    3600 => 5000,  // 5000 req/hour daily budget
+]);
+
+// Login endpoint with tight controls: the scope restricts counting to the
+// login path (shared across all windows), and the keyless rule counts per
+// client IP through the Config IP resolver.
+$config->throttles->multi('login', [
+    60  => 5,      // 5 attempts/min
+    3600 => 20,    // 20 attempts/hour
+], scope: fn($req) => $req->getUri()->getPath() === '/login');
+```
+
+## Dynamic Limits
+
+Both `limit` and `period` accept closures that receive the current `ServerRequestInterface`. This lets you vary rate limits per request based on user role, subscription plan, or any other request property.
+
+```php
+$config->throttles->add(
+    string $name,
+    int|Closure(ServerRequestInterface): int $limit,
+    int|Closure(ServerRequestInterface): int $period,
+    ?Closure $key = null
+): ThrottleSection
+```
+
+### Per-Plan Rate Limits
+
+```php
+use Psr\Http\Message\ServerRequestInterface;
+
+// `plan` and `userId` are request attributes set by your auth middleware
+// (e.g. $req->withAttribute('plan', ...)), not client headers a caller could forge.
+// A single rule handles all plans; no need for separate rules per tier.
+$config->throttles->add(
+    'api',
+    fn(ServerRequestInterface $req): int => match ($req->getAttribute('plan')) {
+        'enterprise' => 10000,
+        'pro'        => 1000,
+        default      => 100,
+    },
+    60,
+    fn(ServerRequestInterface $req): ?string => $req->getAttribute('userId')
+);
+```
+
+### Per-Role Rate Limits
+
+```php
+use Psr\Http\Message\ServerRequestInterface;
+
+// Admins get 100 req/min, regular users get 5 req/min.
+// No key argument: the rule keys on the resolved client IP by default.
+$config->throttles->add(
+    'role-based',
+    fn(ServerRequestInterface $req): int =>
+        $req->getAttribute('role') === 'admin' ? 100 : 5,
+    60,
+);
+```
+
+### Dynamic Period
+
+```php
+// Tighter window during peak hours (9am-5pm)
+$config->throttles->add(
+    'peak-aware',
+    100,
+    fn(ServerRequestInterface $req): int =>
+        (int) date('G') >= 9 && (int) date('G') < 17 ? 30 : 60,
+);
+```
+
+::: tip
+Dynamic limits work with `sliding()` too. The limit closure is evaluated per request, so each request gets the correct limit for its context.
+:::
+
+## KeyExtractors Helpers
+
+Phirewall ships with common key extractors for typical rate limiting scenarios:
+
+| Helper | Description | Returns |
+|--------|-------------|---------|
+| `KeyExtractors::ip()` | **Deprecated.** Keyed on raw `REMOTE_ADDR`. Omit the key to key on the resolved client IP instead; read `$request->getServerParams()['REMOTE_ADDR']` directly if you genuinely need the raw peer. | `?string` |
+| `KeyExtractors::clientIp($resolver)` | **Deprecated.** Was the per-rule proxy-aware key. Set the resolver once with `$config->setIpResolver($resolver->resolve(...))` and omit the key; keyless rules then key on the resolved client IP. | `?string` |
+| `KeyExtractors::header('X-User-Id')` | Raw value of a specific header | `?string` |
+| `KeyExtractors::hashedHeader('X-Api-Key')` | sha256 fingerprint of a header value; preferred for credential-bearing headers (raw value never stored/emitted) | `?string` |
+| `KeyExtractors::method()` | HTTP method (uppercase) | `?string` |
+| `KeyExtractors::path()` | Request path (always returns a value, never skips) | `string` |
+| `KeyExtractors::userAgent()` | User-Agent header value | `?string` |
+
+The client IP is the default key when `key:` is omitted - no extractor needed. Set proxy trust once with `$config->setIpResolver((new TrustedProxyResolver([...]))->resolve(...))` and all keyless rules key on the resolved client IP automatically.
+
+All extractors except `path()` return `null` when the value is missing or empty, which causes the throttle rule to be skipped for that request.
+
+Prefer `hashedHeader()` over `header()` whenever the header carries a credential (`Authorization`, `Cookie`, `X-Api-Key`, …). The cache backend and ban registry then store the sha256 fingerprint rather than the raw secret, so anyone with read access to the cache cannot recover the credential.
+
+### Custom Key Extractors
+
+Write your own closure for any logic:
+
+```php
+// Composite key: IP + path
+$config->throttles->add('per-endpoint', limit: 50, period: 60,
+    key: function ($req): ?string {
+        $ip = $req->getServerParams()['REMOTE_ADDR'] ?? null;
+        return $ip ? $ip . ':' . $req->getUri()->getPath() : null;
+    }
+);
+```
+
+::: tip
+This snippet reads `REMOTE_ADDR` directly to keep the closure short. In production behind a proxy, derive the IP part from your `TrustedProxyResolver` (`$proxyResolver->resolve($req)`) so it is the real client IP, not the proxy peer address. And to rate limit only certain requests while keeping the default client IP key, use `scope:` instead of a null-returning key closure (see [Fixed Window Throttle](#fixed-window-throttle)).
+:::
+
+## Tiered Rate Limits
+
+Define multiple throttle rules with different limits for different use cases. All rules are evaluated independently; a request must satisfy all of them.
+
+```php
+use Flowd\Phirewall\Http\TrustedProxyResolver;
+
+$proxyResolver = new TrustedProxyResolver([
+    '10.0.0.0/8',
+    '172.16.0.0/12',
+    '192.168.0.0/16',
+]);
+$config->setIpResolver($proxyResolver->resolve(...));
+
+// Tier 1: Global per-IP limit (keyless - keys on the resolved client IP)
+$config->throttles->add('global-ip',
+    limit: 1000, period: 60,
+);
+
+// Tier 2: Stricter limit for write operations. The scope restricts the
+// throttle to mutating methods; the keyless rule counts per client IP.
+$config->throttles->add('write-operations', limit: 100, period: 60,
+    scope: fn($req): bool => in_array($req->getMethod(), ['POST', 'PUT', 'PATCH', 'DELETE'], true),
+);
+
+// Tier 3: Per-endpoint limit for expensive operations
+$config->throttles->add('search-endpoint', limit: 20, period: 60,
+    scope: fn($req): bool => $req->getUri()->getPath() === '/api/search',
+);
+```
+
+## Per-User Limits
+
+Enforce rate limits at the firewall on the client IP, which a caller cannot forge (behind a proxy, configure proxy trust once with `$config->setIpResolver((new TrustedProxyResolver([...]))->resolve(...))` and rules key on the resolved client IP by default - omit the key). Do not key a limit on a client-supplied header such as `X-User-Id` or `X-Api-Key`: a caller can rotate or drop it to land in a fresh counter on every request and never reach the limit. For genuine per-authenticated-user limits, enforce them behind your application's auth layer, where the user identity has been verified, rather than on a raw request header at the edge.
+
+::: warning Header keys are client-controlled
+A throttle, fail2ban, or allow2ban rule keyed on a request header (`X-Api-Key`, `X-User-Id`, …) is only as trustworthy as that header. A client can rotate or drop the header to land in a fresh counter on every request and never reach the threshold (a trivial bypass). Key such rules on a value the client cannot freely change: the client IP (set proxy trust with `$config->setIpResolver((new TrustedProxyResolver([...]))->resolve(...))` and omit the key so the rule keys on the resolved client IP), the authenticated principal your auth layer sets *after* verifying it, or a composite of both. When you must key on a credential-bearing header, use `KeyExtractors::hashedHeader('X-Api-Key')`: the raw value otherwise reaches the ban registry and event payloads (and your logs) in cleartext.
+:::
+
+## Rate Limit Headers
+
+Enable standard `X-RateLimit-*` headers on all responses:
+
+```php
+$config->enableRateLimitHeaders();
+```
+
+### Headers on Successful Responses (200)
+
+| Header | Description |
+|--------|-------------|
+| `X-RateLimit-Limit` | Configured request limit |
+| `X-RateLimit-Remaining` | Remaining requests in the current window |
+| `X-RateLimit-Reset` | Seconds until the window resets |
+
+### Headers on Throttled Responses (429)
+
+| Header | Description |
+|--------|-------------|
+| `X-RateLimit-Limit` | Configured request limit |
+| `X-RateLimit-Remaining` | `0` |
+| `X-RateLimit-Reset` | Seconds until the window resets |
+| `Retry-After` | Seconds until the client should retry |
+| `X-Phirewall` | `throttle` (only when `enableResponseHeaders()` is active) |
+| `X-Phirewall-Matched` | Name of the throttle rule that triggered (only when `enableResponseHeaders()` is active) |
+
+::: tip
+When multiple throttle rules match, the rate limit headers reflect the **first** matching rule. Add stricter rules before more lenient ones if you want the most restrictive limits shown.
+:::
+
+## Custom Throttled Response
+
+Override the default `429` response with custom content:
+
+```php
+use Flowd\Phirewall\Config\Response\ClosureThrottledResponseFactory;
+use Nyholm\Psr7\Response;
+
+$config->throttledResponseFactory = new ClosureThrottledResponseFactory(
+    function (string $rule, int $retryAfter, $req) {
+        return new Response(
+            429,
+            ['Content-Type' => 'application/json'],
+            json_encode([
+                'error' => 'Rate limit exceeded',
+                'rule' => $rule,
+                'retry_after' => $retryAfter,
+            ])
+        );
+    }
+);
+```
+
+Phirewall automatically adds the `Retry-After` header and any rate limit headers to your custom response.
+
+See [PSR-17 Factories](/advanced/psr17) for framework-integrated response customization.
+
+## Trusted Proxy Configuration
+
+When your application sits behind a load balancer, CDN, or reverse proxy, `REMOTE_ADDR` contains the proxy IP, not the client IP. Always use `TrustedProxyResolver` in production:
+
+```php
+use Flowd\Phirewall\Http\TrustedProxyResolver;
+
+$resolver = new TrustedProxyResolver([
+    '10.0.0.0/8',       // Internal network
+    '172.16.0.0/12',    // Docker
+    '192.168.0.0/16',   // Private ranges
+    '2001:db8::/32',    // IPv6 support
+]);
+$config->setIpResolver($resolver->resolve(...));
+
+// All keyless rules now key on the resolved client IP
+$config->throttles->add('api', limit: 100, period: 60);
+```
+
+Setting the IP resolver once on the Config is all that is needed. All IP-aware matchers (throttles, fail2ban, allow2ban, filterIp, keyIp) then resolve the client IP consistently through the same resolver.
+
+The resolver's `allowedHeaders` argument defaults to `['X-Forwarded-For']` (a single header); pass `['Forwarded']` explicitly if your stack emits the RFC 7239 header. All forwarded-header instances are folded into one chain and walked right to left, returning the first hop not in your trusted-proxy list (so the trusted-proxy ranges, not the number of header lines, are what prevent spoofing), and IPv6 addresses are canonicalized (IPv4-mapped peers match IPv4 rules). See [Client IP Behind Proxies](/getting-started#client-ip-behind-proxies) for the full behavior.
+
+::: danger
+The raw `REMOTE_ADDR` peer address is the proxy IP behind a load balancer or CDN, so every client would share one throttle key and your limits would stop working. Configure a `TrustedProxyResolver` so rate limits apply to the real client. And never trust `X-Forwarded-For` without configuring trusted proxies: an attacker can otherwise spoof this header to bypass rate limiting entirely.
+:::
+
+## Events
+
+When a throttle limit is exceeded, a `ThrottleExceeded` event is dispatched via PSR-14:
+
+```php
+use Flowd\Phirewall\Events\ThrottleExceeded;
+
+// Event properties
+$event->rule;           // string - Rule name (e.g., "api:1s")
+$event->key;            // string - Throttle key (e.g., client IP)
+$event->limit;          // int - Configured limit
+$event->period;         // int - Window size in seconds
+$event->count;          // int - Current request count
+$event->retryAfter;     // int - Seconds until window resets
+$event->serverRequest;  // ServerRequestInterface
+```
+
+Use this event for alerting, logging, or triggering further actions. See [Observability](/advanced/observability) for integration examples.
+
+## Best Practices
+
+1. **Use `sliding()` for public APIs.** It prevents the double-burst problem with negligible overhead. Reserve `add()` for internal or high-throughput services where simplicity matters more.
+
+2. **Use `multi()` for combined burst + sustained.** A single `multi()` call replaces manually defining separate burst and sustained rules.
+
+3. **Use dynamic limits for per-plan pricing.** A single rule with a closure is cleaner than separate rules per subscription tier.
+
+4. **Configure `setIpResolver()` in production.** Raw `REMOTE_ADDR` is the proxy IP behind load balancers. Set `$config->setIpResolver((new TrustedProxyResolver([...]))->resolve(...))` once and all keyless rules key on the resolved client IP automatically.
+
+5. **Return `null` to skip.** Key closures that return `null` cause the rule to be skipped entirely for that request, with zero overhead.
+
+6. **Enable rate limit headers.** They help well-behaved API clients self-throttle before hitting limits.
+
+7. **Combine with Fail2Ban.** For persistent abusers, add a [Fail2Ban](/features/fail2ban) rule that bans IPs after repeated throttle violations.
