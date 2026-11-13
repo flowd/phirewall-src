@@ -61,6 +61,14 @@ final readonly class RegexEvaluator implements DetailedOperatorEvaluatorInterfac
         $this->patternCompiles = @preg_match($this->delimitedPattern, '') !== false;
     }
 
+    /**
+     * Whether the pattern compiles; a pattern that does not never matches any value.
+     */
+    public function patternCompiles(): bool
+    {
+        return $this->patternCompiles;
+    }
+
     /** @param list<string> $values */
     public function evaluate(array $values): bool
     {

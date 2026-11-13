@@ -4,10 +4,17 @@ declare(strict_types=1);
 
 namespace Flowd\PhirewallPresetOwaspCrs\Engine;
 
+use Flowd\PhirewallPresetOwaspCrs\Engine\Operator\OperatorEvaluatorFactory;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Transformation\Transformation;
 
 final class SecRuleLoader
 {
+    public const SKIP_REASON_UNPARSEABLE = 'unparseable';
+
+    public const SKIP_REASON_UNSUPPORTED_OPERATOR = 'unsupportedOperator';
+
+    public const SKIP_REASON_UNSUPPORTED_TRANSFORMATION = 'unsupportedTransformation';
+
     /**
      * Split text into logical SecRule lines, supporting backslash (\\) line continuations.
      * - Joins lines ending with an unquoted trailing backslash.
@@ -130,46 +137,58 @@ final class SecRuleLoader
 
     public static function fromString(string $rulesText, ?string $contextFolder = null, ?int $maxValuesPerCrsVariable = null): CoreRuleSet
     {
-        $secRuleParser = new SecRuleParser();
-        $rules = [];
-        $lines = self::logicalLines($rulesText);
-
-        foreach ($lines as $line) {
-            $rule = $secRuleParser->parseLine($line, $contextFolder);
-            if ($rule instanceof CoreRule && self::transformationsAreSupported($rule)) {
-                $rules[] = $rule;
-            }
-        }
-
-        return new CoreRuleSet($rules, $maxValuesPerCrsVariable);
+        return self::load($rulesText, $contextFolder, $maxValuesPerCrsVariable)['rules'];
     }
 
     /**
-     * Returns a tuple: [rules => CoreRuleSet, parsed => int, skipped => int]
-     * @return array{rules: CoreRuleSet, parsed: int, skipped: int}
+     * Load rules and report what was skipped. `skipped` counts every logical line that did not
+     * become a rule; `skippedByReason` breaks it down by {@see self::SKIP_REASON_UNPARSEABLE}
+     * (not a parseable SecRule with an id - including other directives),
+     * {@see self::SKIP_REASON_UNSUPPORTED_OPERATOR} (an operator the engine does not implement)
+     * and {@see self::SKIP_REASON_UNSUPPORTED_TRANSFORMATION} (a `t:` action the engine does not
+     * implement); either would otherwise load as a rule that never matches.
+     *
+     * @return array{rules: CoreRuleSet, parsed: int, skipped: int, skippedByReason: array<string, int>}
      */
     public static function fromStringWithReport(string $rulesText, ?int $maxValuesPerCrsVariable = null): array
     {
+        return self::load($rulesText, null, $maxValuesPerCrsVariable);
+    }
+
+    /**
+     * @return array{rules: CoreRuleSet, parsed: int, skipped: int, skippedByReason: array<string, int>}
+     */
+    private static function load(string $rulesText, ?string $contextFolder, ?int $maxValuesPerCrsVariable): array
+    {
         $secRuleParser = new SecRuleParser();
         $rules = [];
-        $parsed = 0;
-        $skipped = 0;
-        $lines = self::logicalLines($rulesText);
+        $skippedByReason = [];
 
-        foreach ($lines as $line) {
-            $rule = $secRuleParser->parseLine($line);
-            if ($rule instanceof CoreRule && self::transformationsAreSupported($rule)) {
-                $rules[] = $rule;
-                ++$parsed;
-            } else {
-                ++$skipped;
+        foreach (self::logicalLines($rulesText) as $line) {
+            $rule = $secRuleParser->parseLine($line, $contextFolder);
+            if (!$rule instanceof CoreRule) {
+                $skippedByReason[self::SKIP_REASON_UNPARSEABLE] = ($skippedByReason[self::SKIP_REASON_UNPARSEABLE] ?? 0) + 1;
+                continue;
             }
+
+            if (!OperatorEvaluatorFactory::isSupported($rule->operator)) {
+                $skippedByReason[self::SKIP_REASON_UNSUPPORTED_OPERATOR] = ($skippedByReason[self::SKIP_REASON_UNSUPPORTED_OPERATOR] ?? 0) + 1;
+                continue;
+            }
+
+            if (!self::transformationsAreSupported($rule)) {
+                $skippedByReason[self::SKIP_REASON_UNSUPPORTED_TRANSFORMATION] = ($skippedByReason[self::SKIP_REASON_UNSUPPORTED_TRANSFORMATION] ?? 0) + 1;
+                continue;
+            }
+
+            $rules[] = $rule;
         }
 
         return [
             'rules' => new CoreRuleSet($rules, $maxValuesPerCrsVariable),
-            'parsed' => $parsed,
-            'skipped' => $skipped,
+            'parsed' => count($rules),
+            'skipped' => array_sum($skippedByReason),
+            'skippedByReason' => $skippedByReason,
         ];
     }
 

@@ -150,6 +150,21 @@ final class CoreRuleSetCrsExclusionTest extends TestCase
         $this->assertSame([], $decoded->evaluate($encodedPath)->matchedRuleIds());
     }
 
+    public function testRuntimeExclusionWithNegatedConditionAppliesWhenTheOperatorDoesNotMatch(): void
+    {
+        $coreRuleSet = new CoreRuleSet([$this->argsRule(400029)]);
+        // Remove the rule for every request outside /api/.
+        $coreRuleSet->applyRuleExclusions(
+            'SecRule REQUEST_URI "!@beginsWith /api/" "id:410004,phase:1,pass,nolog,ctl:ruleRemoveById=400029"',
+        );
+
+        $outsideApi = (new ServerRequest('GET', '/blog'))->withQueryParams(['q' => 'suspicious']);
+        $this->assertFalse($coreRuleSet->evaluate($outsideApi)->isBlocked(), 'The negated condition matches outside /api/');
+
+        $insideApi = (new ServerRequest('GET', '/api/search'))->withQueryParams(['q' => 'suspicious']);
+        $this->assertTrue($coreRuleSet->evaluate($insideApi)->isBlocked(), 'The negated condition does not match inside /api/');
+    }
+
     public function testFailClosedConditionDoesNotArmTheExclusion(): void
     {
         $coreRuleSet = new CoreRuleSet([$this->argsRule(400019)]);
