@@ -131,6 +131,24 @@ RULE);
         $this->assertFalse($hydrated->matches(new ServerRequest('GET', '/')));
     }
 
+    public function testRuleWithoutOperatorUsesImplicitRx(): void
+    {
+        // ModSecurity treats an operator-less argument as an @rx pattern. The single-word form
+        // used to be dropped, and "evil payload" was read as an operator named "evil".
+        $result = SecRuleLoader::fromStringWithReport(<<<'TXT'
+SecRule ARGS "attack" "id:700401,phase:2,deny"
+SecRule ARGS "evil payload" "id:700402,phase:2,deny"
+TXT);
+
+        $this->assertSame(2, $result['parsed']);
+        $this->assertSame(0, $result['skipped']);
+
+        $rules = $result['rules'];
+        $this->assertSame([700401], $rules->evaluate((new ServerRequest('GET', '/'))->withQueryParams(['q' => 'an attack']))->matchedRuleIds());
+        $this->assertSame([700402], $rules->evaluate((new ServerRequest('GET', '/'))->withQueryParams(['q' => 'some evil payload']))->matchedRuleIds());
+        $this->assertSame([], $rules->evaluate((new ServerRequest('GET', '/'))->withQueryParams(['q' => 'evil']))->matchedRuleIds());
+    }
+
     public function testRuleWithUnsupportedOperatorIsSkippedAndReported(): void
     {
         // Loading it would yield a rule that silently never matches.

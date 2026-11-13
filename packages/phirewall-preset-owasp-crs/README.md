@@ -336,7 +336,9 @@ reads a custom rule file:
   (`msg:'it's bad',deny`) is skipped rather than guessed.
 - **Operators.** `@rx`, `@contains`, `@streq`, `@beginsWith`, `@endsWith`, `@pm`,
   `@pmFromFile`, each optionally negated with `!` (`"!@rx ^(?:GET|POST)$"` matches a
-  value the pattern does not match; no values means no match). A rule with any other
+  value the pattern does not match; no values means no match). Without an operator the
+  whole argument is an `@rx` pattern (`"evil payload"` is `"@rx evil payload"`,
+  `"!^GET$"` is `"!@rx ^GET$"`). A rule with any other
   operator (`@ipMatch`, `@detectSQLi`, ...) is skipped instead of loading as a rule that
   never matches.
 - **Skipped rules.** `SecRuleLoader::fromStringWithReport()` returns `parsed`,

@@ -287,6 +287,32 @@ Rule_WRAP;
     }
 
     /**
+     * @return iterable<string, array{string, string, string}>
+     */
+    public static function implicitRxOperators(): iterable
+    {
+        yield 'single word' => ['attack', '@rx', 'attack'];
+        yield 'pattern with a space' => ['evil payload', '@rx', 'evil payload'];
+        yield 'regex syntax' => ['^(?:a|b)\\d+$', '@rx', '^(?:a|b)\\d+$'];
+        yield 'negated' => ['!^(?:GET|POST)$', '!@rx', '^(?:GET|POST)$'];
+    }
+
+    #[DataProvider('implicitRxOperators')]
+    public function testOperatorPartWithoutOperatorIsAnRxPattern(string $operatorPart, string $expectedOperator, string $expectedPattern): void
+    {
+        $rule = (new SecRuleParser())->parseLine('SecRule ARGS "' . $operatorPart . '" "id:1,deny"');
+
+        $this->assertNotNull($rule);
+        $this->assertSame($expectedOperator, $rule->operator);
+        $this->assertSame($expectedPattern, $rule->operatorArgument);
+    }
+
+    public function testLoneNegationIsNotAnOperator(): void
+    {
+        $this->assertNull((new SecRuleParser())->parseLine('SecRule ARGS "!" "id:1,deny"'));
+    }
+
+    /**
      * @return iterable<string, array{string, bool}>
      */
     public static function disruptiveActions(): iterable
