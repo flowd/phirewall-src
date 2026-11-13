@@ -44,13 +44,13 @@ All methods throw `InvalidArgumentException` for invalid IPs and `RuntimeExcepti
 
 ## Apache .htaccess Adapter
 
-The built-in `ApacheHtaccessAdapter` maintains a managed section in Apache `.htaccess` files using `Require not ip` directives (mod_authz_core, Apache 2.4+).
+The built-in `ApacheHtaccessAdapter` maintains a managed section in Apache `.htaccess` files with one `Require not ip` directive per blocked address (mod_authz_core, Apache 2.4+), wrapped so that the block can only deny access, never grant it.
 
 ### Requirements
 
 - Apache 2.4+ with `mod_authz_core`
 - Write permissions to the `.htaccess` file
-- `AllowOverride AuthConfig` (or `All`) in the Apache VirtualHost configuration
+- `AllowOverride AuthConfig` (or `All`) in the Apache VirtualHost configuration; this also covers the `<If>` section the adapter writes
 
 ### Basic Usage
 
@@ -102,14 +102,45 @@ RewriteEngine On
 RewriteRule ^(.*)$ index.php [L]
 
 # BEGIN Phirewall
-Require not ip 192.168.1.101
-Require not ip 10.0.0.50
-Require not ip 2001:db8::5
+<If "true">
+    AuthMerging And
+    <RequireAll>
+        Require all granted
+        Require not ip 192.168.1.101
+        Require not ip 10.0.0.50
+        Require not ip 2001:db8::5
+    </RequireAll>
+</If>
 # END Phirewall
 
 # More custom rules (preserved)
 Options -Indexes
 ```
+
+When no address is blocked, the section contains only the two marker lines.
+
+Why the wrapper:
+
+- Apache rejects a negated `Require not ip` that is not inside `<RequireAll>` (`negative Require directive has no effect in <RequireAny> directive`) and answers **every** request in the directory with HTTP 500.
+- A plain top-level `<RequireAll>` with `Require all granted` is not safe either. All top-level authorization directives of one `.htaccess` are combined with logical OR (an implicit `<RequireAny>`), so it would grant access to every non-blocked client next to your own rules, for example bypassing a `Require valid-user` (HTTP Basic auth). And because `AuthMerging` defaults to `Off`, it would replace a restriction from the parent directory (for example `Require ip 10.0.0.0/8`) instead of adding to it.
+- `<If "true">` is merged after the `.htaccess` as a separate section, and `AuthMerging And` combines it with everything before it (server configuration, parent directories, your own directives in the same file) by logical AND. `Require all granted` inside it therefore cannot widen access: a blocked address gets 403, every other client is authorized exactly as it would be without the Phirewall section.
+
+### Interaction with Your Own Authorization Rules
+
+Verified against Apache 2.4 (`httpd:2.4`, 2.4.71) with `AllowOverride AuthConfig`:
+
+| Surrounding configuration | Not blocked | Blocked |
+|---------------------------|-------------|---------|
+| Nothing besides the server default `Require all granted` | 200 | 403 |
+| `Require valid-user` (Basic auth) in the same `.htaccess` | 401 without credentials, 200 with | 403 with or without credentials |
+| Parent directory restricted with `Require ip 10.9.9.9` | 403 (restriction kept) | 403 |
+| Subdirectory `.htaccess` with `Require all granted` | 200 | 403 (the `<If>` section is inherited and merged after it) |
+
+**Limitation:** an `<If>`, `<ElseIf>` or `<Else>` section of your own that carries `Require` directives and is merged after the Phirewall section - one placed below the `# END Phirewall` marker in the same file, or one in a subdirectory `.htaccess` - replaces the block for the requests it applies to, because `AuthMerging` defaults to `Off`. Add `AuthMerging And` to such a section (or place it above the Phirewall section) to keep the block in effect.
+
+### Upgrading from Older Versions
+
+Earlier versions wrote bare `Require not ip` lines between the markers, which Apache 2.4 rejects with HTTP 500 for the whole directory as soon as the first address is blocked. The adapter still reads that format (`isBlocked()` works on it), and the next `blockIp()`, `unblockIp()`, `blockMany()` or `unblockMany()` call with at least one address rewrites the section into the current form, even when the call does not change the set of blocked addresses (for example re-blocking an already blocked address). `isBlocked()` never writes. To repair a site that currently answers 500 without waiting for the next ban, call `unblockIp()` once with any address, or delete the lines between the markers by hand.
 
 ### Safety Features
 
@@ -448,6 +479,10 @@ apachectl configtest
 ```
 
 Verify the managed section has valid directives. If the file is corrupted, delete the section between `# BEGIN Phirewall` and `# END Phirewall` markers.
+
+### Apache: 500 Internal Server Error After the First Ban
+
+The error log shows `negative Require directive has no effect in <RequireAny> directive`: the managed section was written by an earlier version of the adapter. See [Upgrading from Older Versions](#upgrading-from-older-versions).
 
 ### Apache: Require Directive Not Recognized
 
