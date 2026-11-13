@@ -233,6 +233,15 @@ final class SecRuleParser
             return [null, null];
         }
 
+        // ModSecurity: an operator part that does not name an operator (no leading '@', after
+        // an optional '!' negation) is an @rx pattern in its entirety - "attack" is
+        // "@rx attack", "evil payload" is "@rx evil payload" (not operator "evil").
+        $negation = str_starts_with($operatorPart, '!') ? '!' : '';
+        $afterNegation = ltrim(substr($operatorPart, strlen($negation)));
+        if (!str_starts_with($afterNegation, '@')) {
+            return $afterNegation === '' ? [null, null] : [$negation . '@rx', $afterNegation];
+        }
+
         // First token is operator, rest is argument (may contain spaces)
         $spacePos = strpos($operatorPart, ' ');
         if ($spacePos === false) {
