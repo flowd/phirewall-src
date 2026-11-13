@@ -153,14 +153,17 @@ $config->blocklists->add(string $name, Closure $callback): BlocklistSection
 | `$callback` | `Closure` | `fn(ServerRequestInterface): bool` - return `true` to block |
 
 ```php
-// Block admin panel probes
+use Flowd\Phirewall\Http\PathNormalizer;
+
+// Block admin panel probes. Normalise the path first: `getPath()` is still
+// percent-encoded, so `/%61dmin-panel` or `/./admin-panel` would slip past.
 $config->blocklists->add('scanner-probe',
-    fn($req) => str_starts_with($req->getUri()->getPath(), '/admin-panel')
+    fn($req) => str_starts_with(PathNormalizer::normalize($req->getUri()->getPath()), '/admin-panel')
 );
 
 // Block phpMyAdmin probes
 $config->blocklists->add('pma-probe',
-    fn($req) => str_contains($req->getUri()->getPath(), 'phpmyadmin')
+    fn($req) => str_contains(PathNormalizer::normalize($req->getUri()->getPath()), 'phpmyadmin')
 );
 
 // Block path traversal attempts
@@ -421,6 +424,8 @@ $config->blocklists->fromBackend('block-scanners', 'scanners');
 Prefer `PATH_PREFIX` over `PATH_REGEX` when possible. Prefix matching is significantly faster than regex evaluation.
 :::
 
+Path kinds match the normalised path (see [Path Normalisation](#path-normalisation)); `REQUEST_REGEX` sees the normalised path in its subject too.
+
 ### Pattern Entry Constructor
 
 ```php
@@ -478,6 +483,27 @@ Pattern backends are also the serializable, database-friendly equivalent of file
 
 For a ready-made known-bad-IP blocklist built from a bundled threat-intelligence feed snapshot, use the companion package [`flowd/phirewall-preset-bad-ips`](/features/bad-ip-preset) instead of wiring your own feed.
 :::
+
+## Path Normalisation {#path-normalisation}
+
+PSR-7 hands the path over still percent-encoded and with dot-segments intact, while your web server and router decode and resolve it. Every built-in path rule (the portable `path_equals` / `path_prefix` / `path_regex` filters, the `PATH_EXACT` / `PATH_PREFIX` / `PATH_REGEX` / `REQUEST_REGEX` pattern kinds, and the `path` key extractor) therefore matches the path normalised by `Flowd\Phirewall\Http\PathNormalizer`:
+
+- percent-decoded **once** (`/%2eenv` is `/.env`, `/%61dmin` is `/admin`; `%252e` stays the literal `%2e`; invalid escapes such as `%zz` stay as written);
+- `%2f` treated as `/`; duplicate slashes collapsed; `.` and `..` segments resolved per RFC 3986 (never above the root), so `/./admin` and `/x/%2e%2e/admin` are `/admin`;
+- cut at a decoded NUL byte (`/.env%00.png` is `/.env`); bytes that are not valid UTF-8 re-encoded as `%XX`, so `/u` regexes always see valid UTF-8.
+
+Exact and prefix values are normalised the same way, so `filterPathEquals('/my%20file')` and `filterPathEquals('/my file')` are the same rule. Rules that restrict (blocklists, Fail2Ban / Allow2Ban filters, throttle scopes, tracks) match when **either** the normalised **or** the raw path matches, so a regex written against the raw form (for example one looking for `%2e%2e`) keeps working.
+
+**Safelists are stricter.** Normalisation is a best guess at the resource your application serves, and servers disagree on dot-segments, encoded slashes and backslashes: `/admin/../public` is `/public` to nginx but may reach an `/admin/{any}` route in a router that does not resolve `..`. A safelist path filter therefore never matches an *ambiguous* path, one containing a dot-segment, an encoded slash, a backslash, duplicate slashes, a control character or invalid UTF-8. Plain encodings such as `/%70ublic` still match `/public`.
+
+Not normalised, by design:
+
+- **Case**: `/.ENV` is not `/.env`. On a case-insensitive filesystem add an `i`-flagged `path_regex` for the paths that matter.
+- **Trailing slash**: `/admin` and `/admin/` are different paths; use a prefix or `#^/admin/?$#`.
+- **Backslash**: an ordinary character, as on nginx and Apache. On IIS / Windows backends write regexes with `[/\\]`.
+- **Path parameters** (`;jsessionid=…`) stay part of the path.
+
+Closures you write yourself receive the raw request. Call `PathNormalizer::normalize($req->getUri()->getPath())` in blocklist-style closures; in safelist closures prefer an exact comparison on the raw path, or check `PathNormalizer::analyze($path)->ambiguous` first.
 
 ## IP Resolution {#ip-resolution}
 
