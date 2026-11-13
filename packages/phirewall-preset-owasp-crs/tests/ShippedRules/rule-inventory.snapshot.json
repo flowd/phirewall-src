@@ -1,5 +1,5 @@
 {
-    "crsVersion": "v4.29.0",
+    "crsVersion": "v4.30.0",
     "rulesByParanoiaLevel": {
         "1": [
             913100,
@@ -38,6 +38,7 @@
             932170,
             932171,
             932175,
+            932180,
             932230,
             932235,
             932250,
@@ -218,7 +219,7 @@
         ]
     },
     "severityCounts": {
-        "CRITICAL": 196,
+        "CRITICAL": 197,
         "NOTICE": 1,
         "WARNING": 10
     }
