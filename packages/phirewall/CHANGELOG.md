@@ -5,6 +5,12 @@ All notable changes to Phirewall are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **`ApacheHtaccessAdapter` no longer takes the site down with the first ban.** The managed section held bare `Require not ip` lines, which Apache 2.4 rejects outside `<RequireAll>` (`negative Require directive has no effect in <RequireAny> directive`), answering every request in the directory with HTTP 500. The adapter now wraps the lines in `<If "true">` with `AuthMerging And` and a `<RequireAll>` that starts with `Require all granted`; with no blocked addresses only the markers are written. The `<If>`/`AuthMerging And` wrapper ANDs the block with the server configuration, parent directories and the site's own directives in the same `.htaccess`, so it can only deny: a bare top-level `<RequireAll>` would be OR-ed with the site's own `Require` directives (bypassing e.g. `Require valid-user`) and would replace a parent directory's restriction. Verified on Apache 2.4.71 with `AllowOverride AuthConfig`. Files in the old format are still read, and the next `blockIp()`/`unblockIp()`/`blockMany()`/`unblockMany()` call with at least one address rewrites them into the new format even when the set of blocked addresses is unchanged; `isBlocked()` never writes. Limitation: an `<If>`/`<ElseIf>`/`<Else>` section with its own `Require` directives that Apache merges after the managed section (below it in the same file, or in a subdirectory `.htaccess`) replaces the block unless it carries `AuthMerging And` itself.
+
 ## 0.10.0 - 2026-08-07
 
 ### Added
