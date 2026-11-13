@@ -123,8 +123,11 @@ only). `bin/release --no-push` stops after the commit. The first release needs a
 
 Merging the pull request (any merge method) runs `.github/workflows/release.yml`:
 
-1. finds the `release/X.Y.Z` branch of the pushed commit,
-2. tags the merge commit `X.Y.Z`,
+1. finds the pull request of the pushed commit: it must be merged into `main`, have the pushed commit as its
+   merge commit and come from a `release/X.Y.Z` branch of this repository. A pull request from a fork never
+   releases, whatever its branch is called, and neither does a commit message on its own,
+2. checks that the `dev-main` branch alias of all packages is `X.(Y+1).x-dev`, as `bin/release` sets it, and
+   tags the merge commit `X.Y.Z`,
 3. calls `split.yml`, which pushes every `packages/<name>` as a snapshot commit plus the tag to its mirror,
 4. creates the GitHub release with generated notes.
 

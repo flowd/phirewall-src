@@ -1,6 +1,7 @@
 name: Release
 
-# A release is a merged pull request from a release/X.Y.Z branch (created by bin/release).
+# A release is a merged pull request from a release/X.Y.Z branch of this repository (created
+# by bin/release, never a fork).
 # Merging it tags the merge commit, publishes the packages to their mirrors and creates
 # the GitHub release.
 on:
@@ -26,32 +27,67 @@ jobs:
     outputs:
       version: ${{ steps.detect.outputs.version }}
     steps:
-      - name: Find the release branch of the pushed commit
+      - name: Find the release pull request of the pushed commit
         id: detect
         env:
           GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          # The version is only ever taken from a pull request that
+          #   - is merged into the default branch,
+          #   - has the pushed commit as its merge commit (merge, squash and rebase alike),
+          #   - comes from a release/X.Y.Z branch of this repository, not of a fork
+          #     (a deleted fork has no head repository and does not count either).
+          # The commit message alone never makes a release.
+          owner="${GITHUB_REPOSITORY%%/*}"
+          # shellcheck disable=SC2016 # $sha, $base and $repo are jq variables
+          release_pr='[.[]
+              | select(.merged_at != null
+                  and .merge_commit_sha == $sha
+                  and .base.ref == $base
+                  and .head.repo.full_name == $repo)
+              | .head.ref
+              | capture("^release/(?<version>[0-9]+\\.[0-9]+\\.[0-9]+)$").version
+            ] | first // ""'
+          describe='.[] | "#\(.number) \(.head.repo.full_name // "(deleted fork)"):\(.head.ref) into \(.base.ref), merged: \(.merged_at != null), merge commit: \(.merge_commit_sha)"'
+
           # Commits that do not mention a release are not looked at any further.
           message="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}" --jq '.commit.message')"
+          subject="${message%%$'\n'*}"
           version=""
           if grep -qi 'release' <<< "$message"; then
-            # The pull request of a fresh push is not always linked to the commit yet, retry.
-            ref=""
+            # The pull request of a fresh push is not always linked to the commit yet. The
+            # subject line that a bin/release pull request produces names its branch, which
+            # allows looking the pull request up by branch in the meantime. That lookup goes
+            # through the same checks, the subject only says where to look:
+            #   merge commit  "Merge pull request #N from <owner>/release/X.Y.Z"
+            #   squash        "Release X.Y.Z (#N)" or "Prepare release X.Y.Z (#N)"
+            #   rebase        "Prepare release X.Y.Z"
+            hint=""
+            merge_re='^Merge pull request #[0-9]+ from ([^/]+)/release/([0-9]+\.[0-9]+\.[0-9]+)$'
+            title_re='^(Prepare release|Release) ([0-9]+\.[0-9]+\.[0-9]+)( \(#[0-9]+\))?$'
+            if [[ "$subject" =~ $merge_re && "${BASH_REMATCH[1]}" == "$owner" ]]; then
+              hint="${BASH_REMATCH[2]}"
+            elif [[ "$subject" =~ $title_re ]]; then
+              hint="${BASH_REMATCH[2]}"
+            fi
+
             for attempt in 1 2 3 4 5 6; do
-              ref="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" --jq '.[0].head.ref // ""')"
-              [[ -z "$ref" ]] || break
-              echo "No pull request linked to ${GITHUB_SHA} yet (attempt ${attempt}), waiting."
+              linked="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls")"
+              candidates="$linked"
+              if [[ -n "$hint" ]]; then
+                by_branch="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=closed&base=${DEFAULT_BRANCH}&head=${owner}:release/${hint}")"
+                candidates="$(jq -s 'add | unique_by(.number)' <<< "${linked}${by_branch}")"
+              fi
+              jq -r "$describe" <<< "$candidates"
+              version="$(jq -r --arg sha "$GITHUB_SHA" --arg base "$DEFAULT_BRANCH" --arg repo "$GITHUB_REPOSITORY" "$release_pr" <<< "$candidates")"
+              [[ -z "$version" ]] || break
+              # A linked pull request that is not a release is final.
+              [[ "$(jq 'length' <<< "$linked")" == "0" ]] || break
+              (( attempt < 6 )) || break
+              echo "No release pull request found for ${GITHUB_SHA} yet (attempt ${attempt}), waiting."
               sleep 10
             done
-            echo "Pull request head ref: '${ref}'"
-            if [[ "$ref" =~ ^release/([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
-              version="${BASH_REMATCH[1]}"
-            elif [[ -z "$ref" && "$message" =~ (release/|[Rr]elease\ )([0-9]+\.[0-9]+\.[0-9]+) ]]; then
-              # Still unlinked: fall back to the commit message ("Merge pull request ... from
-              # flowd/release/X.Y.Z", "Prepare release X.Y.Z" or the title "Release X.Y.Z").
-              version="${BASH_REMATCH[2]}"
-              echo "Version taken from the commit message."
-            fi
           fi
           if [[ -n "$version" ]]; then
             echo "Release ${version}"
@@ -71,6 +107,24 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # bin/release moves the dev-main branch alias of every package to the next minor, so
+      # the commit has to declare X.(Y+1).x-dev for release X.Y.Z. The changelogs are no
+      # reliable marker, bin/release leaves a changelog without "## Unreleased" untouched.
+      - name: Check the version against the branch alias
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          IFS=. read -r major minor _patch <<< "$VERSION"
+          expected="${major}.$((minor + 1)).x-dev"
+          for file in composer.json packages/*/composer.json; do
+            alias="$(jq -r '.extra["branch-alias"]["dev-main"] // ""' "$file")"
+            if [[ "$alias" != "$expected" ]]; then
+              echo "::error file=${file}::The dev-main branch alias is '${alias}', release ${VERSION} needs '${expected}'."
+              exit 1
+            fi
+          done
+          echo "All branch aliases are ${expected}."
 
       - name: Create and push the tag
         env:
