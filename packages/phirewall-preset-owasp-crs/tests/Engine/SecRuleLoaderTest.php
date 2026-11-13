@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Flowd\PhirewallPresetOwaspCrs\Tests\Engine;
 
+use Flowd\PhirewallPresetOwaspCrs\Engine\CoreRule;
 use Flowd\PhirewallPresetOwaspCrs\Engine\SecRuleLoader;
 use Flowd\PhirewallPresetOwaspCrs\Tests\TemporaryFiles;
 use Nyholm\Psr7\ServerRequest;
@@ -85,6 +86,7 @@ TXT;
         $this->assertSame(2, $result['parsed']);
         // Comment lines are dropped during logical line building; only the truly invalid line is counted as skipped
         $this->assertSame(1, $result['skipped']);
+        $this->assertSame([SecRuleLoader::SKIP_REASON_UNPARSEABLE => 1], $result['skippedByReason']);
 
         $rules = $result['rules'];
         $this->assertSame([700001], $rules->evaluate(new ServerRequest('GET', '/admin'))->matchedRuleIds());
@@ -104,6 +106,49 @@ RULE);
 
         $this->assertFalse($evaluation->isBlocked());
         $this->assertSame([], $evaluation->matchedRuleIds());
+    }
+
+    public function testNegatedOperatorMatchesWhenTheOperatorDoesNot(): void
+    {
+        $result = SecRuleLoader::fromStringWithReport(
+            'SecRule REQUEST_METHOD "!@rx ^(?:GET|POST)$" "id:700201,phase:1,deny,msg:\'Method not allowed\'"',
+        );
+
+        $this->assertSame(1, $result['parsed']);
+        $this->assertSame([700201], $result['rules']->evaluate(new ServerRequest('PUT', '/'))->matchedRuleIds());
+        $this->assertSame([], $result['rules']->evaluate(new ServerRequest('GET', '/'))->matchedRuleIds());
+        $this->assertSame([], $result['rules']->evaluate(new ServerRequest('POST', '/'))->matchedRuleIds());
+    }
+
+    public function testNegatedOperatorSurvivesTheCompiledArtifactRoundTrip(): void
+    {
+        $rule = SecRuleLoader::fromString('SecRule REQUEST_METHOD "!@streq GET" "id:700202,phase:1,deny"')->getRule(700202);
+        $this->assertInstanceOf(CoreRule::class, $rule);
+
+        $hydrated = CoreRule::fromArray($rule->toArray());
+
+        $this->assertTrue($hydrated->matches(new ServerRequest('DELETE', '/')));
+        $this->assertFalse($hydrated->matches(new ServerRequest('GET', '/')));
+    }
+
+    public function testRuleWithUnsupportedOperatorIsSkippedAndReported(): void
+    {
+        // Loading it would yield a rule that silently never matches.
+        $result = SecRuleLoader::fromStringWithReport(<<<'TXT'
+SecRule REQUEST_HEADERS:X-Forwarded-For "@ipMatch 10.0.0.0/8" "id:700301,phase:1,deny"
+SecRule REQUEST_HEADERS:X-Forwarded-For "!@ipMatch 10.0.0.0/8" "id:700302,phase:1,deny"
+SecRule ARGS "@detectSQLi" "id:700303,phase:2,deny"
+SecRule REQUEST_URI "@contains admin" "id:700304,phase:2,deny"
+TXT);
+
+        $this->assertSame(1, $result['parsed']);
+        $this->assertSame(3, $result['skipped']);
+        $this->assertSame(
+            [SecRuleLoader::SKIP_REASON_UNSUPPORTED_OPERATOR => 2, SecRuleLoader::SKIP_REASON_UNPARSEABLE => 1],
+            $result['skippedByReason'],
+        );
+        $this->assertSame([700304], $result['rules']->ids());
+        $this->assertNotContains(700301, SecRuleLoader::fromString('SecRule ARGS "@ipMatch 10.0.0.0/8" "id:700301,deny"')->ids());
     }
 
     public function testFromFilesLoadsConcatenatedFiles(): void

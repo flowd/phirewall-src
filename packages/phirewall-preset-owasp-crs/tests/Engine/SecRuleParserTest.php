@@ -275,6 +275,17 @@ Rule_WRAP;
         $this->assertArrayNotHasKey('', $rule->actions, 'A double comma must not create an empty action key');
     }
 
+    public function testNegatedRxArgumentIsKeptVerbatim(): void
+    {
+        // Like @rx, a negated !@rx pattern is bare PCRE: no quote stripping or unescaping,
+        // which would turn the escaped backslash into a single one.
+        $rule = (new SecRuleParser())->parseLine('SecRule ARGS "!@rx \'^[a-z\\\\]+\'$" "id:1,deny"');
+
+        $this->assertNotNull($rule);
+        $this->assertSame('!@rx', $rule->operator);
+        $this->assertSame("'^[a-z\\\\]+'$", $rule->operatorArgument);
+    }
+
     /**
      * @return iterable<string, array{string, bool}>
      */

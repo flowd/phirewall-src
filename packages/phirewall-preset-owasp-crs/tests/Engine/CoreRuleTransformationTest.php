@@ -154,6 +154,7 @@ final class CoreRuleTransformationTest extends TestCase
         $report = SecRuleLoader::fromStringWithReport($rules);
         $this->assertSame(1, $report['parsed']);
         $this->assertSame(1, $report['skipped']);
+        $this->assertSame([SecRuleLoader::SKIP_REASON_UNSUPPORTED_TRANSFORMATION => 1], $report['skippedByReason']);
         $this->assertSame([1], $report['rules']->ids());
     }
 

@@ -38,6 +38,8 @@ final readonly class RuleFileTransformer
 
     /**
      * Operators implemented by Flowd\PhirewallPresetOwaspCrs\Engine\Operator\OperatorEvaluatorFactory.
+     * Negated forms (`!@rx`) are implemented too but deliberately not imported, so the
+     * shipped rule set does not change with the engine.
      */
     private const SUPPORTED_OPERATORS = [
         '@rx',

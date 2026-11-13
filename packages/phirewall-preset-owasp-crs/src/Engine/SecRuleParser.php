@@ -248,8 +248,9 @@ final class SecRuleParser
         // rule 942511 wraps its alternation in literal apostrophes), collapsing the
         // regex to its inner body and matching essentially every HTTP value. The outer
         // SecRule-level quoting has already been removed by stripQuotes($parts[1]) in
-        // parseLine, so the remaining content is the pattern verbatim.
-        if (strtolower($op) === '@rx') {
+        // parseLine, so the remaining content is the pattern verbatim. The same holds for a
+        // negated "!@rx".
+        if (strtolower(ltrim($op, '!')) === '@rx') {
             return [$op, ltrim($arg)];
         }
 
