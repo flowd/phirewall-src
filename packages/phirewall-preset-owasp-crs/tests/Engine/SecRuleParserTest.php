@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Flowd\PhirewallPresetOwaspCrs\Tests\Engine;
 
 use Flowd\PhirewallPresetOwaspCrs\Engine\SecRuleParser;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class SecRuleParserTest extends TestCase
@@ -272,5 +273,77 @@ Rule_WRAP;
         $this->assertSame(200, $rule->id);
         $this->assertTrue($rule->actions['deny'] ?? false);
         $this->assertArrayNotHasKey('', $rule->actions, 'A double comma must not create an empty action key');
+    }
+
+    /**
+     * @return iterable<string, array{string, bool}>
+     */
+    public static function disruptiveActions(): iterable
+    {
+        yield 'deny' => ['id:1,phase:2,deny', true];
+        yield 'block (CRS anomaly scoring)' => ['id:1,phase:2,block', true];
+        yield 'drop' => ['id:1,phase:2,drop', true];
+        yield 'redirect' => ["id:1,phase:2,redirect:'https://example.com/blocked'", true];
+        yield 'proxy' => ["id:1,phase:2,proxy:'http://honeypot.internal/'", true];
+        yield 'action names are case-insensitive' => ['id:1,phase:2,DENY', true];
+        yield 'pass' => ['id:1,phase:2,pass', false];
+        yield 'allow' => ['id:1,phase:2,allow', false];
+        yield 'allow with a scope' => ['id:1,phase:2,allow:request', false];
+        yield 'no disruptive action (SecDefaultAction)' => ['id:1,phase:2,log', false];
+        yield 'last disruptive action wins (deny)' => ['id:1,phase:2,pass,deny', true];
+        yield 'last disruptive action wins (pass)' => ['id:1,phase:2,deny,pass', false];
+    }
+
+    #[DataProvider('disruptiveActions')]
+    public function testDisruptiveActionDecidesWhetherTheRuleBlocks(string $actions, bool $expectedBlocking): void
+    {
+        $rule = (new SecRuleParser())->parseLine('SecRule ARGS "@rx foo" "' . $actions . '"');
+
+        $this->assertNotNull($rule);
+        $this->assertSame($expectedBlocking, $rule->actions['deny']);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function nonBlockingActionsMentioningBlockingWords(): iterable
+    {
+        yield 'msg with a comma' => ["id:1,pass,nolog,msg:'not blocking, just audit'"];
+        yield 'msg mentioning deny' => ["id:1,pass,msg:'would deny in production'"];
+        yield 'tag' => ["id:1,log,tag:'deny-list'"];
+        yield 'logdata' => ["id:1,pass,logdata:'block candidate: %{MATCHED_VAR}'"];
+        yield 'setvar' => ["id:1,pass,setvar:'tx.blocking_paranoia_level=1'"];
+        yield 'escaped quote in msg' => ["id:1,pass,msg:'it\\'s not a block'"];
+    }
+
+    #[DataProvider('nonBlockingActionsMentioningBlockingWords')]
+    public function testBlockingWordsInActionValuesDoNotMakeTheRuleBlocking(string $actions): void
+    {
+        $rule = (new SecRuleParser())->parseLine('SecRule ARGS "@rx foo" "' . $actions . '"');
+
+        $this->assertNotNull($rule);
+        $this->assertFalse($rule->actions['deny']);
+    }
+
+    public function testStrayQuoteThatHidesTheDisruptiveActionRejectsTheRule(): void
+    {
+        // The apostrophe in "it's" closes the msg quote early and the rest of the list,
+        // including the real "deny", is swallowed by a quote that never closes. Whether the
+        // rule blocks cannot be decided from the action list, so the rule is rejected instead
+        // of silently loading with a guessed meaning.
+        $secRuleParser = new SecRuleParser();
+
+        $this->assertNull($secRuleParser->parseLine("SecRule ARGS \"@rx foo\" \"id:1,msg:'it's bad',deny\""));
+        // Equally undecidable the other way round: the stray quote exposes a "block" from the msg.
+        $this->assertNull($secRuleParser->parseLine("SecRule ARGS \"@rx foo\" \"id:1,pass,msg:'it's bad, block'\""));
+        $this->assertNull($secRuleParser->parseLine("SecRule ARGS \"@rx foo\" \"id:1,pass,msg:'it's bad,block,really'\""));
+    }
+
+    public function testStrayQuoteAfterTheDisruptiveActionKeepsTheRule(): void
+    {
+        $rule = (new SecRuleParser())->parseLine("SecRule ARGS \"@rx foo\" \"id:1,phase:2,deny,msg:'Don't do that'\"");
+
+        $this->assertNotNull($rule);
+        $this->assertTrue($rule->actions['deny']);
     }
 }

@@ -322,7 +322,18 @@ $coreRuleSet = SecRuleLoader::fromString(
 $config->blocklists->addRule(new BlocklistRule('owasp', new CoreRuleSetMatcher($coreRuleSet)));
 ```
 
-The engine implements a pragmatic subset of ModSecurity; see the table below.
+The engine implements a pragmatic subset of ModSecurity; see the table below. How it
+reads a custom rule file:
+
+- **Disruptive action.** Only the parsed action list decides whether a rule blocks
+  (case-insensitive; the last disruptive action wins). `deny`, `block`, `drop`,
+  `redirect` and `proxy` make it a scoring rule that contributes its `severity` to
+  the anomaly total (there is no redirect or proxy - those intercept as a block).
+  `pass`, `allow` and no disruptive action (SecDefaultAction) leave it non-blocking,
+  and non-blocking rules are not evaluated: `setvar` scoring is not interpreted and
+  `allow` does not whitelist. Words in `msg`/`tag`/`logdata` values never count. A
+  rule whose action list is unbalanced by a stray quote around a disruptive action
+  (`msg:'it's bad',deny`) is skipped rather than guessed.
 
 ### Paranoia levels
 

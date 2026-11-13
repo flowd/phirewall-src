@@ -10,7 +10,8 @@ namespace Flowd\PhirewallPresetOwaspCrs\Engine;
  * The set of supported variables is defined by {@see Variable\VariableCollectorFactory}
  * and the set of supported operators by {@see Operator\OperatorEvaluatorFactory};
  * those factories are the source of truth. Actions: id (required), phase (ignored),
- * deny/block (boolean), msg/logdata (optional), severity (resolved to an anomaly
+ * the disruptive action (see {@see BLOCKING_DISRUPTIVE_ACTIONS}; resolved into the
+ * boolean `deny` action), msg/logdata (optional), severity (resolved to an anomaly
  * score, missing/unknown scores as CRITICAL), tag (collected as a list; the
  * paranoia level is read from a `paranoia-level/N` tag), t (the transformations,
  * collected as a list in the order they are written).
@@ -18,6 +19,21 @@ namespace Flowd\PhirewallPresetOwaspCrs\Engine;
 final class SecRuleParser
 {
     private const PARANOIA_LEVEL_TAG_PATTERN = '#^paranoia-level/([1-4])$#';
+
+    /**
+     * ModSecurity's disruptive actions. When a rule lists several, the last one wins.
+     */
+    private const DISRUPTIVE_ACTIONS = ['allow', 'block', 'deny', 'drop', 'pass', 'proxy', 'redirect'];
+
+    /**
+     * Disruptive actions that intercept the request in ModSecurity. The engine has a single
+     * way to intercept - the rule contributes its score to the anomaly total, which blocks
+     * at the threshold - so all of them make the rule a blocking (`deny`) rule. `block` is
+     * CRS's anomaly-scoring action. `pass`, `allow` and no disruptive action at all (which
+     * defers to SecDefaultAction, `pass` by default) leave the rule non-blocking: the engine
+     * does not evaluate it.
+     */
+    private const BLOCKING_DISRUPTIVE_ACTIONS = ['block', 'deny', 'drop', 'proxy', 'redirect'];
 
     /**
      * Parse a raw CRS "SecRule" line into a CoreRule, or null if unsupported.
@@ -75,16 +91,23 @@ final class SecRuleParser
         }
 
         // Actions: comma-separated key[:value]
-        ['actions' => $actions, 'tags' => $tags, 'ctls' => $ctls, 'transformations' => $transformations] = $this->parseActions($actionsPart);
+        $parsedActions = $this->parseActions($actionsPart);
+        if ($parsedActions['unterminatedQuote'] && $this->quotedRegionMentionsDisruptiveAction($actionsPart)) {
+            // A stray quote (e.g. an apostrophe in a msg) leaves the action list unbalanced, so
+            // where the quoted values end is unknown. When a disruptive action appears in that
+            // region, whether the rule blocks cannot be decided: reject the rule rather than guess.
+            return null;
+        }
+
+        ['actions' => $actions, 'tags' => $tags, 'ctls' => $ctls, 'transformations' => $transformations] = $parsedActions;
         $id = isset($actions['id']) ? (int)$actions['id'] : 0;
         if ($id <= 0) {
             return null; // require id
         }
 
-        // Map block to deny for compatibility with CRS syntax
-        $hasDeny = array_key_exists('deny', $actions) ? (bool)$actions['deny'] : str_contains($actionsPart, 'deny');
-        $hasBlock = array_key_exists('block', $actions) ? (bool)$actions['block'] : str_contains($actionsPart, 'block');
-        $actions['deny'] = $hasDeny || $hasBlock;
+        // Only the tokenized action list decides whether the rule blocks: free text in
+        // msg/logdata/tag values never does (a `msg:'not blocking'` is not a block action).
+        $actions['deny'] = in_array($parsedActions['disruptiveAction'], self::BLOCKING_DISRUPTIVE_ACTIONS, true);
 
         $severity = null;
         $anomalyScore = 5;
@@ -250,14 +273,19 @@ final class SecRuleParser
      * collected into their own lists (in source order) instead of the last-wins map; so are the
      * `t:` actions, which stay in the map as well.
      *
-     * @return array{actions: array<string, int|string|bool>, tags: list<string>, ctls: list<string>, transformations: list<string>}
+     * `disruptiveAction` is the last disruptive action name in source order (lowercased), or null.
+     * `unterminatedQuote` is set when the list ends inside an unclosed quote.
+     *
+     * @return array{actions: array<string, int|string|bool>, tags: list<string>, ctls: list<string>, transformations: list<string>, disruptiveAction: ?string, unterminatedQuote: bool}
      */
     private function parseActions(string $actionsPart): array
     {
         $actions = [];
         $buffer = '';
         $parts = [];
+        $unterminatedQuote = false;
         foreach ($this->scanSpans($actionsPart) as $span) {
+            $unterminatedQuote = $unterminatedQuote || $span['open'];
             if ($span['quoted'] || $span['open']) {
                 // Quoted spans (and an unterminated open-quote run) never split a part: any
                 // commas within them are literal.
@@ -284,10 +312,13 @@ final class SecRuleParser
         $tags = [];
         $ctls = [];
         $transformations = [];
+        $disruptiveAction = null;
         foreach ($parts as $part) {
             if ($part === '') {
                 continue;
             }
+
+            $disruptiveAction = $this->disruptiveActionName($part) ?? $disruptiveAction;
 
             $kv = explode(':', $part, 2);
             if (count($kv) === 1) {
@@ -313,7 +344,42 @@ final class SecRuleParser
             }
         }
 
-        return ['actions' => $actions, 'tags' => $tags, 'ctls' => $ctls, 'transformations' => $transformations];
+        return [
+            'actions' => $actions,
+            'tags' => $tags,
+            'ctls' => $ctls,
+            'transformations' => $transformations,
+            'disruptiveAction' => $disruptiveAction,
+            'unterminatedQuote' => $unterminatedQuote,
+        ];
+    }
+
+    /**
+     * Whether any comma-separated fragment from the first quote character onwards names a
+     * disruptive action, ignoring quoting (and quote characters around the name). Only used
+     * for an unbalanced action list, whose quoted regions cannot be trusted.
+     */
+    private function quotedRegionMentionsDisruptiveAction(string $actionsPart): bool
+    {
+        $quotedRegion = substr($actionsPart, strcspn($actionsPart, '\'"'));
+        foreach (explode(',', $quotedRegion) as $fragment) {
+            if ($this->disruptiveActionName(trim($fragment, " \t'\"")) !== null) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The lowercased disruptive action name of one `name[:value]` action, or null when the
+     * action is not disruptive. Action names are matched case-insensitively, like ModSecurity.
+     */
+    private function disruptiveActionName(string $action): ?string
+    {
+        $name = strtolower(trim(explode(':', $action, 2)[0]));
+
+        return in_array($name, self::DISRUPTIVE_ACTIONS, true) ? $name : null;
     }
 
     private function stripQuotes(string $value): string

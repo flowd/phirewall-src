@@ -91,6 +91,21 @@ TXT;
         $this->assertSame([700002], $rules->evaluate(new ServerRequest('POST', '/x'))->matchedRuleIds());
     }
 
+    public function testNonBlockingRuleMentioningBlockInItsMessageDoesNotBlock(): void
+    {
+        // Regression: the disruptive action used to fall back to a substring search over the
+        // whole action list, so a "pass" rule whose msg contained "block" blocked.
+        $coreRuleSet = SecRuleLoader::fromString(<<<'RULE'
+SecRule ARGS "@rx foo" "id:700101,phase:2,pass,nolog,msg:'not blocking, just audit'"
+SecRule ARGS "@rx foo" "id:700102,phase:2,log,tag:'deny-list'"
+RULE);
+
+        $evaluation = $coreRuleSet->evaluate((new ServerRequest('GET', '/?a=foo'))->withQueryParams(['a' => 'foo']));
+
+        $this->assertFalse($evaluation->isBlocked());
+        $this->assertSame([], $evaluation->matchedRuleIds());
+    }
+
     public function testFromFilesLoadsConcatenatedFiles(): void
     {
         $f1 = $this->temporaryFile('a.conf', "SecRule REQUEST_URI \"@contains a\" \"id:710001,phase:2,deny\"\n");
