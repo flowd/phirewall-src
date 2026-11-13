@@ -312,6 +312,17 @@ Rule_WRAP;
         $this->assertNull((new SecRuleParser())->parseLine('SecRule ARGS "!" "id:1,deny"'));
     }
 
+    public function testDetectsTheChainActionFromTheTokenizedActionList(): void
+    {
+        $secRuleParser = new SecRuleParser();
+
+        $this->assertTrue($secRuleParser->hasChainAction('SecRule ARGS "@rx foo" "id:1,deny,chain"'));
+        $this->assertTrue($secRuleParser->hasChainAction('SecRule REQUEST_METHOD "@streq POST" "t:none,Chain"'), 'A continuation without id');
+        $this->assertFalse($secRuleParser->hasChainAction('SecRule REQUEST_METHOD "@streq POST" "t:none"'));
+        $this->assertFalse($secRuleParser->hasChainAction('SecRule REQUEST_METHOD "@streq POST"'), 'No action list at all');
+        $this->assertFalse($secRuleParser->hasChainAction("SecRule ARGS \"@rx foo\" \"id:1,deny,msg:'chain, of events'\""));
+    }
+
     /**
      * @return iterable<string, array{string, bool}>
      */

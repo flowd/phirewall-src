@@ -169,6 +169,39 @@ TXT);
         $this->assertNotContains(700301, SecRuleLoader::fromString('SecRule ARGS "@ipMatch 10.0.0.0/8" "id:700301,deny"')->ids());
     }
 
+    public function testChainedRulesAreSkippedAsAUnitAndReported(): void
+    {
+        // Evaluating the chain starter on its own would block without its chained condition.
+        $result = SecRuleLoader::fromStringWithReport(<<<'TXT'
+SecRule ARGS "@rx foo" "id:700501,phase:2,deny,chain"
+    SecRule REQUEST_METHOD "@streq POST" "t:none"
+SecRule ARGS "@rx bar" "id:700502,phase:2,deny,CHAIN,msg:'three links'"
+    SecRule REQUEST_METHOD "@streq POST" "t:none,chain"
+    SecRule REQUEST_URI "@beginsWith /admin"
+SecRule ARGS "@rx baz" "id:700503,phase:2,deny,msg:'a chain of events'"
+TXT);
+
+        $this->assertSame(1, $result['parsed']);
+        $this->assertSame(2, $result['skipped']);
+        $this->assertSame([SecRuleLoader::SKIP_REASON_CHAINED => 2], $result['skippedByReason']);
+
+        $rules = $result['rules'];
+        $this->assertSame([700503], $rules->ids(), 'The rule after the chains loads; "chain" in a msg is not the chain action');
+        $this->assertFalse($rules->evaluate((new ServerRequest('GET', '/'))->withQueryParams(['q' => 'foo']))->isBlocked());
+        $this->assertFalse($rules->evaluate((new ServerRequest('POST', '/admin'))->withQueryParams(['q' => 'bar']))->isBlocked());
+        $this->assertSame([700503], $rules->evaluate((new ServerRequest('GET', '/'))->withQueryParams(['q' => 'baz']))->matchedRuleIds());
+    }
+
+    public function testFromStringDropsChainedRules(): void
+    {
+        $coreRuleSet = SecRuleLoader::fromString(<<<'TXT'
+SecRule ARGS "@rx foo" "id:700601,phase:2,deny,chain"
+    SecRule REQUEST_METHOD "@streq POST" "t:none"
+TXT);
+
+        $this->assertSame([], $coreRuleSet->ids());
+    }
+
     public function testFromFilesLoadsConcatenatedFiles(): void
     {
         $f1 = $this->temporaryFile('a.conf', "SecRule REQUEST_URI \"@contains a\" \"id:710001,phase:2,deny\"\n");

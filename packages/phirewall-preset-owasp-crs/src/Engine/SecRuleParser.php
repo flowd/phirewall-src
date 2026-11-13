@@ -134,6 +134,27 @@ final class SecRuleParser
     }
 
     /**
+     * Whether a SecRule line carries the `chain` action (case-insensitive), read with the same
+     * action tokenizer as {@see parseLineWithCtl()}. Works for chain continuation lines, which
+     * have no id and therefore never parse into a rule.
+     */
+    public function hasChainAction(string $line): bool
+    {
+        $parts = $this->splitTopLevel(trim($line));
+        if (count($parts) < 3) {
+            return false;
+        }
+
+        foreach (array_keys($this->parseActions($this->stripQuotes($parts[2]))['actions']) as $actionName) {
+            if (strtolower($actionName) === 'chain') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Split a SecRule line into parts: ["SecRule <vars>", "<op arg>", "<actions>"]
      * Quoted segments act as the delimiters; unquoted runs between them form their own segments.
      *

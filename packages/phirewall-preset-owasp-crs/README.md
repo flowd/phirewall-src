@@ -341,9 +341,14 @@ reads a custom rule file:
   `"!^GET$"` is `"!@rx ^GET$"`). A rule with any other
   operator (`@ipMatch`, `@detectSQLi`, ...) is skipped instead of loading as a rule that
   never matches.
+- **No chains.** Rules are evaluated independently, so a chain (`...,chain"` followed
+  by its chained `SecRule`s) is skipped as a whole; evaluating the first rule alone
+  would block without the chained conditions.
 - **Skipped rules.** `SecRuleLoader::fromStringWithReport()` returns `parsed`,
   `skipped` and `skippedByReason` (`unparseable` - including other directives such
-  as `SecAction` - and `unsupportedOperator`); check it when loading your own rules.
+  as `SecAction` -, `unsupportedOperator`, `unsupportedTransformation` and `chained`,
+  counted once per chain);
+  check it when loading your own rules.
 
 ### Paranoia levels
 

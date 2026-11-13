@@ -15,6 +15,8 @@ final class SecRuleLoader
 
     public const SKIP_REASON_UNSUPPORTED_TRANSFORMATION = 'unsupportedTransformation';
 
+    public const SKIP_REASON_CHAINED = 'chained';
+
     /**
      * Split text into logical SecRule lines, supporting backslash (\\) line continuations.
      * - Joins lines ending with an unquoted trailing backslash.
@@ -144,9 +146,11 @@ final class SecRuleLoader
      * Load rules and report what was skipped. `skipped` counts every logical line that did not
      * become a rule; `skippedByReason` breaks it down by {@see self::SKIP_REASON_UNPARSEABLE}
      * (not a parseable SecRule with an id - including other directives),
-     * {@see self::SKIP_REASON_UNSUPPORTED_OPERATOR} (an operator the engine does not implement)
-     * and {@see self::SKIP_REASON_UNSUPPORTED_TRANSFORMATION} (a `t:` action the engine does not
-     * implement); either would otherwise load as a rule that never matches.
+     * {@see self::SKIP_REASON_UNSUPPORTED_OPERATOR} (an operator the engine does not implement),
+     * {@see self::SKIP_REASON_UNSUPPORTED_TRANSFORMATION} (a `t:` action the engine does not
+     * implement; either would otherwise load as a rule that never matches) and
+     * {@see self::SKIP_REASON_CHAINED} (a rule chain, counted once for the starter and all its
+     * chained rules).
      *
      * @return array{rules: CoreRuleSet, parsed: int, skipped: int, skippedByReason: array<string, int>}
      */
@@ -163,11 +167,29 @@ final class SecRuleLoader
         $secRuleParser = new SecRuleParser();
         $rules = [];
         $skippedByReason = [];
+        $chainContinuationExpected = false;
 
         foreach (self::logicalLines($rulesText) as $line) {
+            $isSecRule = str_starts_with($line, 'SecRule ');
+
+            // The engine evaluates rules independently, so a chain cannot be evaluated faithfully:
+            // its starter alone would match (and block) without the chained conditions. Skip the
+            // whole chain - the starter and every following SecRule up to the one without `chain`.
+            if ($chainContinuationExpected && $isSecRule) {
+                $chainContinuationExpected = $secRuleParser->hasChainAction($line);
+                continue;
+            }
+
             $rule = $secRuleParser->parseLine($line, $contextFolder);
             if (!$rule instanceof CoreRule) {
                 $skippedByReason[self::SKIP_REASON_UNPARSEABLE] = ($skippedByReason[self::SKIP_REASON_UNPARSEABLE] ?? 0) + 1;
+                $chainContinuationExpected = $chainContinuationExpected || ($isSecRule && $secRuleParser->hasChainAction($line));
+                continue;
+            }
+
+            if ($secRuleParser->hasChainAction($line)) {
+                $skippedByReason[self::SKIP_REASON_CHAINED] = ($skippedByReason[self::SKIP_REASON_CHAINED] ?? 0) + 1;
+                $chainContinuationExpected = true;
                 continue;
             }
 
