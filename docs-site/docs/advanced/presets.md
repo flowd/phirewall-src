@@ -37,6 +37,8 @@ Preset rules emit the same [observability events](/advanced/observability) as ha
 | `scannerBlocking()` | `preset.scanner.known-tools` (known scanner/exploit User-Agents) and `preset.scanner.suspicious-headers` (requests missing the standard browser `Accept` / `Accept-Language` / `Accept-Encoding` headers). |
 | `sensitivePathBlocking()` | `preset.sensitive-path.probes`: pattern blocklist for `/.git`, `/.svn`, `/.hg`, `/.env*`, `/.aws/credentials`, `/.htpasswd`, `/.htaccess`, `/.DS_Store`. |
 
+Path presets match the normalised request path, so encoded or dot-segment spellings such as `/%2eenv`, `/%2egit/config` or `/x/../.env` are blocked like `/.env` and `/.git/config`. Case is not normalised; see [Path Normalisation](/features/safelists-blocklists#path-normalisation).
+
 Resolve any preset by name with `Presets::get($name)` (a `PortableConfig`), passing one of the `Presets::names()` constants.
 
 ## Conventions and overrides
