@@ -48,7 +48,7 @@ final class CoreRuleSetMatcherLazyTest extends TestCase
             'sources' => RuleSetLoader::fingerprint(RuleSetLoader::ruleFiles(ParanoiaLevel::Level1, $rulesDirectory)),
             'rules' => $rules,
         ];
-        $compiledDataCache->load('owasp-crs-v4-pl1-' . sha1($rulesDirectory), [], static fn(): array => $artifact);
+        $compiledDataCache->load('owasp-crs-v5-pl1-' . sha1($rulesDirectory), [], static fn(): array => $artifact);
         CompiledDataCache::clearProcessCache();
     }
 

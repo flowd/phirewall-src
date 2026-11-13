@@ -83,7 +83,7 @@ final class CoreRuleSetMatcherCompiledPhrasesTest extends TestCase
      */
     private function artifactIdentifier(): string
     {
-        return 'owasp-crs-v4-pl1-' . sha1($this->rulesDirectory);
+        return 'owasp-crs-v5-pl1-' . sha1($this->rulesDirectory);
     }
 
     /**

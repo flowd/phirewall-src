@@ -51,9 +51,11 @@ final class CoreRuleSetMatcher implements RequestMatcherInterface, CompiledDataC
      * {@see CoreRule::toArray()} / {@see CoreRule::fromArray()} change the
      * artifact shape, or {@see PhraseSet} builds its prefilter differently,
      * so an upgrade rebuilds stale artifacts instead of hydrating an
-     * incompatible one.
+     * incompatible one - and whenever the parser changes what a rule line
+     * means, so an artifact parsed with the old meaning is not served after
+     * an upgrade.
      */
-    private const COMPILED_SCHEMA_VERSION = 4;
+    private const COMPILED_SCHEMA_VERSION = 5;
 
     /** Diagnostic-header bound: more matched rule ids are summarized as ',+N'. */
     private const MAX_RULE_IDS_IN_HEADER = 10;
