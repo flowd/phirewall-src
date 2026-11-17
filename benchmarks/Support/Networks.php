@@ -42,7 +42,9 @@ final class Networks
         while (count($addresses) < $count) {
             // Linear congruential generator: the same sequence on every platform.
             $state = ($state * 1103515245 + 12345) % 2147483648;
-            $address = long2ip(($state * 2) % 4294967296);
+            $number = ($state * 2) % 4294967296;
+            // Not long2ip(): it may return false before PHP 8.4.
+            $address = sprintf('%d.%d.%d.%d', $number >> 24, ($number >> 16) & 255, ($number >> 8) & 255, $number & 255);
             // Leave out what a request of the benchmarks could come from.
             if (str_starts_with($address, '203.0.113.')) {
                 continue;
