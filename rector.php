@@ -6,6 +6,7 @@ use Rector\CodeQuality\Rector\Catch_\ThrowWithPreviousExceptionRector;
 use Rector\CodingStyle\Rector\Encapsed\EncapsedStringsToSprintfRector;
 use Rector\Config\RectorConfig;
 use Rector\DeadCode\Rector\Cast\RecastingRemovalRector;
+use Rector\DeadCode\Rector\ClassMethod\RemoveUnusedPublicMethodParameterRector;
 use Rector\Naming\Rector\Assign\RenameVariableToMatchMethodCallReturnTypeRector;
 use Rector\Naming\Rector\Class_\RenamePropertyToMatchTypeRector;
 use Rector\Naming\Rector\ClassMethod\RenameVariableToMatchNewTypeRector;
@@ -14,6 +15,7 @@ use Rector\PHPUnit\PHPUnit60\Rector\ClassMethod\AddDoesNotPerformAssertionToNonA
 
 return RectorConfig::configure()
     ->withPaths(array_merge(
+        [__DIR__ . '/benchmarks'],
         glob(__DIR__ . '/packages/*/examples', GLOB_ONLYDIR) ?: [],
         glob(__DIR__ . '/packages/*/src', GLOB_ONLYDIR) ?: [],
         glob(__DIR__ . '/packages/*/tests', GLOB_ONLYDIR) ?: [],
@@ -39,6 +41,11 @@ return RectorConfig::configure()
     ->withSkip([
         StringClassNameToClassConstantRector::class => [
             __DIR__ . '/packages/phirewall/src/Http/ResponseFactoryResolver.php',
+        ],
+        // A benchmark takes the arguments of its data set, also when only a hook or
+        // the complexity attribute uses them.
+        RemoveUnusedPublicMethodParameterRector::class => [
+            __DIR__ . '/benchmarks',
         ],
         RenamePropertyToMatchTypeRector::class,
         RenameVariableToMatchMethodCallReturnTypeRector::class,

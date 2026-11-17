@@ -18,8 +18,15 @@ return static function (MBConfig $mbConfig): void {
             'friendsofphp/php-cs-fixer' => '^3.89',
             'infection/infection' => '^0.29',
             'phpstan/phpstan' => '^1.12',
+            'phpstan/tally' => '^1.0.1',
             'rector/rector' => '^1.2',
             'symplify/monorepo-builder' => '^12.7',
+        ],
+        // The benchmarks cover several packages, so they live in the root and not in a package.
+        'autoload-dev' => [
+            'psr-4' => [
+                'Flowd\\PhirewallBenchmarks\\' => 'benchmarks/',
+            ],
         ],
         'config' => [
             'sort-packages' => true,

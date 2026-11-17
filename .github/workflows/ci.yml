@@ -231,13 +231,59 @@ jobs:
           composer global require --no-progress --no-interaction shipmonk/composer-dependency-analyser
           "$(composer global config bin-dir --absolute --quiet)/composer-dependency-analyser"
 
+  # Tally counts instructions, cycles and memory instead of time. The expected numbers
+  # in benchmarks/ fit this runner image and this PHP version only: changing either,
+  # like a new PHP patch release, means accepting new numbers (see CONTRIBUTING.md).
+  benchmarks:
+    name: Benchmarks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          tools: composer:v2
+          extensions: mbstring, json
+          coverage: none
+
+      - name: Get composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-php8.5-composer-${{ hashFiles('**/composer.json') }}
+          restore-keys: |
+            ${{ runner.os }}-php8.5-composer-
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: Run the benchmarks
+        run: vendor/bin/tally run --output=.build/tally
+
+      # "tally accept" takes the new numbers from this artifact.
+      - name: Keep the results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tally-results
+          path: .build/tally
+          if-no-files-found: ignore
+
   # Single stable check name for branch protection: require only "CI passed"
   # instead of every matrix job, so the required-checks list survives matrix changes.
   ci-passed:
     name: CI passed
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [static, tests, examples, package-check]
+    needs: [static, tests, examples, package-check, benchmarks]
     if: always()
     steps:
       - name: Fail when a needed job did not succeed

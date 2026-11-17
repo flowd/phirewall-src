@@ -1,6 +1,7 @@
 parameters:
   level: max
   paths:
+    - benchmarks
     - packages/phirewall/src
     - packages/phirewall/tests
     - packages/phirewall-preset-bad-ips/src
@@ -14,5 +15,10 @@ parameters:
   checkUninitializedProperties: true
   reportUnmatchedIgnoredErrors: true
   treatPhpDocTypesAsCertain: false
+  ignoreErrors:
+    # Benchmarks assign their properties in #[Before] hooks, Tally's counterpart of setUp().
+    -
+      identifier: property.uninitialized
+      path: benchmarks/*
 includes:
     - phar://vendor/phpstan/phpstan/phpstan.phar/conf/bleedingEdge.neon

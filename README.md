@@ -89,6 +89,7 @@ composer test               # monorepo validation, Rector, PHP-CS-Fixer, PHPStan
 | `composer fix` | Rector and PHP-CS-Fixer, applying the changes |
 | `composer monorepo:merge` / `composer monorepo:validate` | Root `composer.json` and consistency of the packages |
 | `composer test:database` | `PdoCache` against SQLite, MySQL and PostgreSQL (needs Docker) |
+| `composer benchmarks` | [Tally](https://github.com/phpstan/tally) benchmarks in `benchmarks/` (Linux only, see [CONTRIBUTING](CONTRIBUTING.md#benchmarks)) |
 
 Rector, PHP-CS-Fixer and PHPStan are configured once at the root (`rector.php`, `.php-cs-fixer.php`,
 `phpstan.neon.dist`). PHPUnit runs per package with the `phpunit.xml.dist` of that package.
