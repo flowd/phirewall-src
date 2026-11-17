@@ -12,6 +12,7 @@ use Flowd\PhirewallBenchmarks\Support\Outcome;
 use Flowd\PhirewallBenchmarks\Support\Requests;
 use Psr\Http\Message\ServerRequestInterface;
 use Tally\Attribute\Before;
+use Tally\Attribute\Expected;
 use Tally\Attribute\Warmup;
 
 /**
@@ -37,16 +38,19 @@ final class DecisionBench
         Outcome::mustPass($this->smallFirewall->decide($this->serverRequest));
     }
 
+    #[Expected(instructions: '22.20K', cycles: '29.07K', memory: '1000B')]
     public function benchNoRulesInAWorker(): void
     {
         $this->emptyFirewall->decide($this->serverRequest);
     }
 
+    #[Expected(instructions: '100.8K', cycles: '140.0K', memory: '2.867KiB')]
     public function benchSmallRuleSetInAWorker(): void
     {
         $this->smallFirewall->decide($this->serverRequest);
     }
 
+    #[Expected(instructions: '182.0K', cycles: '249.4K', memory: '10.40KiB')]
     public function benchSmallRuleSetPerRequest(): void
     {
         (new Firewall($this->smallRuleSet()))->decide($this->serverRequest);
