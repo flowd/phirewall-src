@@ -177,6 +177,13 @@ path-scoped rules, comparing against another header). Implement
 entries the selector matches, and its exceptions propagate like manipulator
 exceptions, governed by the failure policy (`useFailOpen()`).
 
+A condition is not asked once per rule. A global exclusion is answered once per
+request for each entry, and an exclusion by tag once for all rules that the same
+tag exclusions apply to; only an exclusion by rule id is answered for that rule
+alone. So an expensive check (a signature verification, a lookup) is paid once
+per value, not once per SQL injection rule. Write conditions that depend on
+their arguments only and do not rely on how often they are called.
+
 ::: warning Validate strictly
 Everything the condition approves is invisible to the rules in scope. Verify the
 signature and parse the full format - a shape-only check ("looks like a JWT")
@@ -251,7 +258,8 @@ transformation depends on request context. The three-parameter
 
 Manipulators run after exclusions; global manipulator results are computed once
 per variable per request and shared across all rules, per-rule manipulators
-specialize from that shared result.
+specialize from that shared result. Like conditions, manipulators must depend on
+their arguments only: how often one is called for a value is not defined.
 
 ::: warning Manipulators weaken detection
 Whatever a manipulator removes or rewrites is invisible to every rule it applies to -
@@ -724,6 +732,13 @@ drop table
 insert into
 ```
 
+With a [compiled-data cache](#caching), phrase files named `*.data` that sit directly in
+the rules directory are compiled into the cached rules, together with a prefilter that
+checks a value against all phrases of a file in one pass. A request then neither reads
+nor parses them, and the cache is rebuilt when one of them changes. A phrase file with
+another name or in a subdirectory still works, but is read whenever the rules are
+loaded, which under PHP-FPM is every request: name your own phrase files `*.data`.
+
 ::: warning
 `@pmFromFile` confines the operand to the rules directory. Directory traversal (`..`), absolute paths, and stream-wrapper schemes (`file://`, `php://`, ...) are all rejected, so a rule cannot load a file from outside its directory. An operand that cannot be safely resolved fails closed - the rule blocks - rather than being silently skipped, so a misconfigured `@pmFromFile` cannot quietly disable protection.
 :::
@@ -793,9 +808,15 @@ Earlier versions truncated an oversized value to an 8 KiB head and matched only 
 
 ### Caching
 
-Each operator evaluator and variable collector is instantiated once per rule at construction time and reused across requests. Regular expressions are compiled on first use (with PCRE's internal JIT cache), phrase lists from `@pmFromFile` are loaded and cached per file path, and all other operators use simple string operations with no additional overhead.
+Under PHP-FPM every request starts from nothing, so what counts is how much has to be rebuilt before the first rule can run. Without a cache that is everything: the rule files are parsed and the phrase files of the `@pmFromFile` rules are read on every request, which costs about ten milliseconds for paranoia level 1.
 
-What *is* worth caching is the one-time cost of **parsing** the rule files into the `CoreRuleSet` - several milliseconds that, under PHP-FPM, would otherwise be paid on every request. Build the matcher with the lazy factory and give the `Config` a compiled-data cache; the parsed rules are then served from an OPcache-backed artifact and re-parsed only when a rule file changes:
+Build the matcher with the lazy factory and give the `Config` a compiled-data cache. The rules are then served from an OPcache-backed artifact that holds:
+
+- the parsed rules,
+- the phrases of every `@pm` rule and of every `@pmFromFile` rule whose file is a `*.data` file of the rules directory,
+- for each of those phrase lists a prefilter, one expression that tells in a single pass whether a value contains any of the phrases at all. Only a value it does not rule out is searched phrase by phrase, so the prefilter never changes what a rule finds.
+
+The artifact is rebuilt when a rule file or one of those phrase files changes, is added or is removed, and after an update of the package that changes its format. What remains per request is turning the cached data into rule objects, well under a millisecond for paranoia level 1 (see [Performance](/advanced/performance#owasp-crs-cost)).
 
 ```php
 use Flowd\Phirewall\Config\Rule\BlocklistRule;
@@ -810,7 +831,9 @@ $matcher->disable(941110); // toggles before the first request are queued
 $config->blocklists->addRule(new BlocklistRule('owasp', $matcher));
 ```
 
-`Presets::blocklist()` and `Presets::fail2ban()` already build lazily, so they pick up the cache automatically. A matcher constructed eagerly with an already parsed `CoreRuleSet` keeps parsing at construction and ignores the cache. See [Presets › Caching expensive preset data](/advanced/presets#caching-expensive-preset-data).
+`Presets::blocklist()` and `Presets::fail2ban()` already build lazily, so they pick up the cache automatically. A matcher constructed eagerly with an already parsed `CoreRuleSet` keeps parsing at construction and ignores the cache; its phrase rules then read their files and search phrase by phrase, without a prefilter.
+
+In a long-running worker (FrankenPHP, RoadRunner, Swoole) the rules are built once per worker and only the evaluation is left per request. See [Presets › Caching expensive preset data](/advanced/presets#caching-expensive-preset-data).
 
 ### Operator Performance
 
@@ -819,7 +842,7 @@ $config->blocklists->addRule(new BlocklistRule('owasp', $matcher));
 | `@streq` | Low | Simple string comparison |
 | `@contains` | Low | Substring search |
 | `@startsWith` / `@endsWith` | Low | Prefix/suffix check |
-| `@pm` | Medium | Case-insensitive phrase matching (pre-compiled) |
+| `@pm` / `@pmFromFile` | Low to medium | Case-insensitive phrase matching. With the compiled-data cache one pass per value rules out all phrases; without it every phrase is searched for |
 | `@rx` | High | PCRE regex (compiled on first use, cached) |
 
 ::: tip
