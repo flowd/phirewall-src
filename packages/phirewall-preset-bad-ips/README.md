@@ -29,10 +29,11 @@ $config = (new Config($cache))->with(Presets::blocklist());
 
 ### Skipping the per-request parse
 
-Parsing the snapshot and compiling ~18k addresses into lookup tables costs
-around 15 ms and, under PHP-FPM, would run on every request. Give your
-`Config` a compiled-data cache (phirewall `^0.9`) and both steps are served
-from OPcache-backed artifacts instead - re-parsed only when the data file
+Reading the snapshot and turning ~18k addresses into a lookup table costs
+about 2 ms and, under PHP-FPM, would run on every request. Give your
+`Config` a compiled-data cache and the table comes ready from one
+OPcache-backed artifact, which leaves about 0.05 ms per request (PHP 8.5 with
+OPcache, code on local disk). The artifact is rebuilt when the data file
 changes:
 
 ```php
