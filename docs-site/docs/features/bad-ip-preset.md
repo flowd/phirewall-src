@@ -29,7 +29,7 @@ $config = (new Config($cache))->with(Presets::blocklist());
 | `Presets::blocklist()` | Blocks requests whose client IP is in the bundled snapshot. |
 | `Presets::track(period)` | Counts matches without blocking, to measure false positives first. |
 
-The preset loads its ~18k-address snapshot lazily on the first request. Parsing the list and compiling it into IP lookup tables costs a few milliseconds; give the `Config` a compiled-data cache and both steps are served from OPcache-backed artifacts instead, re-parsed only when the data file changes:
+The preset loads its ~18k-address snapshot lazily on the first request. Reading the list and turning it into a lookup table costs about 2 ms, under PHP-FPM on every request. Give the `Config` a compiled-data cache and the table comes ready from one OPcache-backed artifact, which leaves about 0.05 ms per request; the artifact is rebuilt when the data file changes:
 
 ```php
 use Flowd\Phirewall\Support\CompiledDataCache;
@@ -39,7 +39,9 @@ $config->setCompiledDataCache(new CompiledDataCache('/path/to/var/cache/phirewal
 $config = $config->with(Presets::blocklist());
 ```
 
-See [Presets › Caching expensive preset data](/advanced/presets#caching-expensive-preset-data).
+See [Presets › Caching expensive preset data](/advanced/presets#caching-expensive-preset-data) for the cache and [Performance › IP list cost](/advanced/performance#ip-list-cost) for how the figures were measured.
+
+The artifact belongs to a data file of one modification time and size. A snapshot replaced by one with the same time and the same size is not noticed until the cache directory is cleared. That takes a deployment that gives every file one fixed time and keeps the cache directory; clear the directory on deployment if yours does.
 
 ## Updating the list
 

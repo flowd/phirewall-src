@@ -130,6 +130,22 @@ Wiring is a single integrator step:
 $config->setCompiledDataCache(new CompiledDataCache($cacheDirectory));
 ```
 
+For a list of IP addresses and networks, `Flowd\Phirewall\Support\IpLookupTable` is the data to cache. It answers whether an address is on the list with one lookup, however long the list is, and its array form is plain data:
+
+```php
+use Flowd\Phirewall\Support\IpLookupTable;
+
+$data = $cache->load(
+    'my-feed-' . hash('sha256', $feedFile),
+    [$feedFile],
+    fn(): array => IpLookupTable::fromEntries(readFeed($feedFile))->toArray()
+);
+
+// null means the artifact is not a table: build it from the feed, never use an empty one.
+$table = IpLookupTable::fromArray($data) ?? IpLookupTable::fromEntries(readFeed($feedFile));
+$isListed = $table->contains($clientIp);
+```
+
 The cache travels as Config infrastructure (composition inherits it from the base layer, like the PSR-16 store). A preset matcher that builds its data lazily implements `Flowd\Phirewall\Matchers\CompiledDataCacheAware`; the `Firewall` hands the cache to every aware matcher, filter, and throttle scope before evaluation - mirroring how `ClientIpResolverAware` late-binds the IP resolver. Without a configured cache nothing is injected and the matcher builds its data directly, so caching stays an opt-in feature with no per-package wiring.
 
 ## Example
