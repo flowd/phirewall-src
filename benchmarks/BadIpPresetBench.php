@@ -15,6 +15,7 @@ use Flowd\PhirewallBenchmarks\Support\Requests;
 use Flowd\PhirewallPresetBadIps\Presets;
 use Psr\Http\Message\ServerRequestInterface;
 use Tally\Attribute\Before;
+use Tally\Attribute\Expected;
 use Tally\Attribute\Warmup;
 use Tally\Meter;
 use Tally\ScratchDirectory;
@@ -60,17 +61,20 @@ final class BadIpPresetBench
         Outcome::mustPass((new Firewall($this->config($this->compiledDataCache())))->decide($this->unlistedClient));
     }
 
+    #[Expected(instructions: '28.15K', cycles: '39.06K', memory: '1.008KiB')]
     public function benchUnlistedClientInAWorker(): void
     {
         $this->firewall->decide($this->unlistedClient);
     }
 
+    #[Expected(instructions: '26.00K', cycles: '37.92K', memory: '1.617KiB')]
     public function benchListedClientInAWorker(): void
     {
         $this->firewall->decide($this->listedClient);
     }
 
     /** The list is read and parsed on every request. */
+    #[Expected(instructions: '59.74M', cycles: '63.09M', memory: '3.798MiB')]
     public function benchPerRequestWithoutCache(): void
     {
         $this->meter->exclude(PhpFpm::startRequest(...));
@@ -79,6 +83,7 @@ final class BadIpPresetBench
     }
 
     /** The parsed list comes from the compiled-data cache. */
+    #[Expected(instructions: '17.09M', cycles: '18.02M', memory: '1.091MiB')]
     public function benchPerRequestWithCache(): void
     {
         $this->meter->exclude(PhpFpm::startRequest(...));

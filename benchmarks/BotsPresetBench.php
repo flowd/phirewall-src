@@ -13,6 +13,7 @@ use Flowd\PhirewallBenchmarks\Support\Requests;
 use Flowd\PhirewallPresetBots\Presets;
 use Psr\Http\Message\ServerRequestInterface;
 use Tally\Attribute\Before;
+use Tally\Attribute\Expected;
 use Tally\Attribute\Warmup;
 
 /**
@@ -34,11 +35,13 @@ final class BotsPresetBench
         Outcome::mustPass($this->firewall->decide($this->serverRequest));
     }
 
+    #[Expected(instructions: '37.89K', cycles: '54.10K', memory: '1.016KiB')]
     public function benchBrowserInAWorker(): void
     {
         $this->firewall->decide($this->serverRequest);
     }
 
+    #[Expected(instructions: '281.7K', cycles: '370.0K', memory: '12.52KiB')]
     public function benchBrowserPerRequest(): void
     {
         (new Firewall($this->config()))->decide($this->serverRequest);

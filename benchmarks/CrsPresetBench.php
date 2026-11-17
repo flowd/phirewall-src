@@ -14,6 +14,7 @@ use Flowd\PhirewallBenchmarks\Support\Requests;
 use Flowd\PhirewallPresetOwaspCrs\Presets;
 use Psr\Http\Message\ServerRequestInterface;
 use Tally\Attribute\Before;
+use Tally\Attribute\Expected;
 use Tally\Attribute\Warmup;
 use Tally\Meter;
 use Tally\ScratchDirectory;
@@ -52,22 +53,26 @@ final class CrsPresetBench
         Outcome::mustBlock($this->firewall->decide($this->sqlInjection));
     }
 
+    #[Expected(instructions: '22.77M', cycles: '23.84M', memory: '19.79KiB')]
     public function benchPageViewInAWorker(): void
     {
         $this->firewall->decide($this->pageView);
     }
 
+    #[Expected(instructions: '32.41M', cycles: '33.63M', memory: '22.91KiB')]
     public function benchFormPostInAWorker(): void
     {
         $this->firewall->decide($this->formPost);
     }
 
+    #[Expected(instructions: '14.21M', cycles: '15.00M', memory: '16.86KiB')]
     public function benchSqlInjectionInAWorker(): void
     {
         $this->firewall->decide($this->sqlInjection);
     }
 
     /** The rule files are parsed on every request. */
+    #[Expected(instructions: '234.6M', cycles: '240.2M', memory: '1.058MiB')]
     public function benchPageViewPerRequestWithoutCache(): void
     {
         $this->meter->exclude(PhpFpm::startRequest(...));
@@ -76,6 +81,7 @@ final class CrsPresetBench
     }
 
     /** The parsed rules come from the compiled-data cache. */
+    #[Expected(instructions: '28.59M', cycles: '30.89M', memory: '412.4KiB')]
     public function benchPageViewPerRequestWithCache(): void
     {
         $this->meter->exclude(PhpFpm::startRequest(...));
