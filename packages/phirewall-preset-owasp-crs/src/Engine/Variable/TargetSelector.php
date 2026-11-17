@@ -33,12 +33,16 @@ final readonly class TargetSelector
     /** Upper bound on an attacker-controlled member name fed to a name-pattern regex (ReDoS guard). */
     private const MAX_MATCHABLE_NAME_LENGTH = 1024;
 
+    /** Whether member names compare without regard to case (header variables). */
+    private bool $caseInsensitiveNames;
+
     private function __construct(
         public string $variable,
         public ?string $name,
         public ?string $namePattern, // validated PCRE, case-insensitive for header variables
         public bool $negated,
     ) {
+        $this->caseInsensitiveNames = $variable === 'REQUEST_HEADERS' || $variable === 'REQUEST_HEADERS_NAMES';
     }
 
     /**
@@ -110,7 +114,7 @@ final readonly class TargetSelector
         }
 
         if ($this->name !== null) {
-            return $this->headerNames()
+            return $this->caseInsensitiveNames
                 ? strcasecmp($this->name, $entryName) === 0
                 : $this->name === $entryName;
         }
@@ -152,9 +156,32 @@ final readonly class TargetSelector
     }
 
     /**
+     * The same few selectors are parsed again and again: every rule lists its
+     * targets, and most rules list the same ones. A selector never changes
+     * once it is built, so each text is analyzed once per process.
+     *
      * @return self|string The parsed selector, or an error message for unsupported input.
      */
     private static function analyze(string $selector): self|string
+    {
+        /** @var array<string, self|string> $analyzed */
+        static $analyzed = [];
+        if (isset($analyzed[$selector])) {
+            return $analyzed[$selector];
+        }
+
+        // Bounded for long-running processes that keep registering new selectors.
+        if (count($analyzed) >= 4096) {
+            $analyzed = [];
+        }
+
+        return $analyzed[$selector] = self::analyzeText($selector);
+    }
+
+    /**
+     * @return self|string The parsed selector, or an error message for unsupported input.
+     */
+    private static function analyzeText(string $selector): self|string
     {
         $selector = trim($selector);
         $negated = str_starts_with($selector, '!');
@@ -218,10 +245,5 @@ final readonly class TargetSelector
         }
 
         return @preg_match($pattern, '') === false ? null : $pattern;
-    }
-
-    private function headerNames(): bool
-    {
-        return in_array($this->variable, ['REQUEST_HEADERS', 'REQUEST_HEADERS_NAMES'], true);
     }
 }

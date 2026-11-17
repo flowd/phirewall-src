@@ -6,6 +6,9 @@ namespace Flowd\PhirewallPresetOwaspCrs\Engine\Operator;
 
 /**
  * Factory that creates the appropriate operator evaluator based on the operator name.
+ *
+ * The phrase operators accept their phrases ready-made ({@see PhraseSet}), as
+ * the compiled rule data delivers them; without, they parse the operand.
  */
 final class OperatorEvaluatorFactory
 {
@@ -13,6 +16,7 @@ final class OperatorEvaluatorFactory
         string $operator,
         string $operatorArgument,
         ?string $contextFolder = null,
+        ?PhraseSet $phraseSet = null,
     ): OperatorEvaluatorInterface {
         return match (strtolower($operator)) {
             '@rx' => new RegexEvaluator($operatorArgument),
@@ -20,8 +24,8 @@ final class OperatorEvaluatorFactory
             '@streq' => new StringEqualEvaluator($operatorArgument),
             '@startswith', '@beginswith' => new StartsWithEvaluator($operatorArgument),
             '@endswith' => new EndsWithEvaluator($operatorArgument),
-            '@pm' => new PhraseMatchEvaluator($operatorArgument),
-            '@pmfromfile' => new PhraseMatchFromFileEvaluator($operatorArgument, $contextFolder),
+            '@pm' => new PhraseMatchEvaluator($operatorArgument, $phraseSet),
+            '@pmfromfile' => new PhraseMatchFromFileEvaluator($operatorArgument, $contextFolder, $phraseSet),
             default => new UnsupportedOperatorEvaluator(),
         };
     }

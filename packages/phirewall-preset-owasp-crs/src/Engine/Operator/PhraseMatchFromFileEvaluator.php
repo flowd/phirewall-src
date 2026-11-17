@@ -14,12 +14,16 @@ namespace Flowd\PhirewallPresetOwaspCrs\Engine\Operator;
  * unsafe operand makes {@see outcome()} fail closed (a deterministic block via the
  * anomaly engine) instead of throwing out of the matcher. A missing or unreadable
  * file yields no phrases (no match). Results are cached per resolved path.
+ *
+ * With a ready-made {@see PhraseSet} (from the compiled rule data, which read
+ * the file through this class when it was built) the file is not touched.
  */
 final readonly class PhraseMatchFromFileEvaluator implements DetailedOperatorEvaluatorInterface
 {
     public function __construct(
         private string $filePath,
         private ?string $contextFolder = null,
+        private ?PhraseSet $phraseSet = null,
     ) {
     }
 
@@ -32,6 +36,10 @@ final readonly class PhraseMatchFromFileEvaluator implements DetailedOperatorEva
     /** @param list<string> $values */
     public function outcome(array $values): OperatorResult
     {
+        if ($this->phraseSet instanceof PhraseSet) {
+            return $this->phraseSet->firstMatch($values);
+        }
+
         try {
             $phrases = $this->loadPhrases();
         } catch (\RuntimeException) {
@@ -47,12 +55,38 @@ final readonly class PhraseMatchFromFileEvaluator implements DetailedOperatorEva
     }
 
     /**
-     * Load phrases from the configured file path.
-     * Safety: missing/unreadable file returns empty list. Results are cached per resolved path.
+     * The file the phrases are read from, as resolved and confined by this
+     * class, or null when the operand is unsafe (the rule then fails closed
+     * and has no phrases to compile).
+     */
+    public function sourceFile(): ?string
+    {
+        try {
+            return $this->resolvePath();
+        } catch (\RuntimeException) {
+            return null;
+        }
+    }
+
+    /**
+     * The phrases as the file has them now, read without the per-process
+     * cache: what is compiled from them outlives the process, so it must not
+     * be what a long-running worker read before the file changed.
      *
      * @return list<string>
+     * @throws \RuntimeException When the operand is unsafe.
      */
-    private function loadPhrases(): array
+    public function phrases(): array
+    {
+        return $this->readPhrases($this->resolvePath());
+    }
+
+    /**
+     * Resolve the operand to the path that is read.
+     *
+     * @throws \RuntimeException When the operand is unsafe.
+     */
+    private function resolvePath(): string
     {
         // Check for directory traversal components (/../ or leading ../) before
         // constructing the resolved path. Uses a regex to avoid false positives on
@@ -89,6 +123,19 @@ final readonly class PhraseMatchFromFileEvaluator implements DetailedOperatorEva
             }
         }
 
+        return $path;
+    }
+
+    /**
+     * Load phrases from the configured file path.
+     * Safety: missing/unreadable file returns empty list. Results are cached per resolved path.
+     *
+     * @return list<string>
+     */
+    private function loadPhrases(): array
+    {
+        $path = $this->resolvePath();
+
         /** @var array<string, list<string>> $cache */
         static $cache = [];
         if (isset($cache[$path])) {
@@ -101,19 +148,26 @@ final readonly class PhraseMatchFromFileEvaluator implements DetailedOperatorEva
             array_shift($cache);
         }
 
+        return $cache[$path] = $this->readPhrases($path);
+    }
+
+    /**
+     * @return list<string> Empty when the file is missing or unreadable.
+     */
+    private function readPhrases(string $path): array
+    {
         if ($path === '' || !is_file($path)) {
-            $cache[$path] = [];
             return [];
         }
 
         $content = @file_get_contents($path);
         if ($content === false) {
-            $cache[$path] = [];
             return [];
         }
 
         $lines = preg_split('/\r?\n/', $content) ?: [];
         $phrases = [];
+        $seen = [];
         foreach ($lines as $line) {
             // @pmFromFile treats each line as one phrase (ModSecurity semantics), unlike the
             // inline @pm operator whose argument is a whitespace/comma-separated list. A
@@ -129,7 +183,9 @@ final readonly class PhraseMatchFromFileEvaluator implements DetailedOperatorEva
                 continue;
             }
 
-            if (!in_array($line, $phrases, true)) {
+            // A lookup, not a search through the phrases so far: the files have thousands of lines.
+            if (!isset($seen[$line])) {
+                $seen[$line] = true;
                 $phrases[] = $line;
             }
 
@@ -138,7 +194,6 @@ final readonly class PhraseMatchFromFileEvaluator implements DetailedOperatorEva
             }
         }
 
-        $cache[$path] = $phrases;
         return $phrases;
     }
 

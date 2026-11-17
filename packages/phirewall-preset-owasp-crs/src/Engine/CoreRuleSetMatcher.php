@@ -10,6 +10,9 @@ use Flowd\Phirewall\Matchers\CompiledDataCacheAware;
 use Flowd\Phirewall\Matchers\FailOpenAware;
 use Flowd\Phirewall\Support\CompiledDataCache;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Exclusion\RuleExclusionParser;
+use Flowd\PhirewallPresetOwaspCrs\Engine\Operator\PhraseListParser;
+use Flowd\PhirewallPresetOwaspCrs\Engine\Operator\PhraseMatchFromFileEvaluator;
+use Flowd\PhirewallPresetOwaspCrs\Engine\Operator\PhraseSet;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Variable\RequestValueManipulatorInterface;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Variable\TargetExclusionConditionInterface;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Variable\TargetSelector;
@@ -46,10 +49,11 @@ final class CoreRuleSetMatcher implements RequestMatcherInterface, CompiledDataC
     /**
      * Format version of the compiled rule data. Bump whenever
      * {@see CoreRule::toArray()} / {@see CoreRule::fromArray()} change the
-     * artifact shape, so an upgrade rebuilds stale artifacts instead of
-     * hydrating an incompatible one.
+     * artifact shape, or {@see PhraseSet} builds its prefilter differently,
+     * so an upgrade rebuilds stale artifacts instead of hydrating an
+     * incompatible one.
      */
-    private const COMPILED_SCHEMA_VERSION = 2;
+    private const COMPILED_SCHEMA_VERSION = 3;
 
     /** Diagnostic-header bound: more matched rule ids are summarized as ',+N'. */
     private const MAX_RULE_IDS_IN_HEADER = 10;
@@ -274,9 +278,10 @@ final class CoreRuleSetMatcher implements RequestMatcherInterface, CompiledDataC
      */
     public function applyRuleExclusions(string $rulesText, ?string $contextFolder = null): self
     {
-        $parsed = (new RuleExclusionParser())->parse($rulesText, $contextFolder); // validate eagerly, even when queued
-        $this->configure(static function (CoreRuleSet $coreRuleSet) use ($rulesText, $contextFolder): void {
-            $coreRuleSet->applyRuleExclusions($rulesText, $contextFolder);
+        // Parsed here, so that malformed text fails now even when applying is queued; what is queued is the parsed form.
+        $parsed = (new RuleExclusionParser())->parse($rulesText, $contextFolder);
+        $this->configure(static function (CoreRuleSet $coreRuleSet) use ($parsed): void {
+            $coreRuleSet->applyParsedRuleExclusions($parsed);
         });
 
         $tags = [];
@@ -535,13 +540,20 @@ final class CoreRuleSetMatcher implements RequestMatcherInterface, CompiledDataC
         }
 
         $ruleFiles = RuleSetLoader::ruleFiles($this->paranoiaLevel, $rulesDirectory);
-        // The file list is part of the identifier so removing a rule file
-        // rebuilds even when the newest mtime stays the same.
+        // The phrase files of the directory are compiled into the artifact
+        // along with the rules that read them, so they are sources as well.
+        $dataFiles = RuleSetLoader::dataFiles($rulesDirectory);
+        $sourceFiles = [...$ruleFiles, ...$dataFiles];
+        // The artifact is named after the state of every source file: its
+        // path, modification time and size. A phrase file is no longer read
+        // per request, so a change to one must not go unnoticed just because
+        // another file is newer; the newest modification time alone, which is
+        // all the cache compares by itself, would miss that.
         $identifier = sprintf(
             'owasp-crs-v%d-pl%d-%s',
             self::COMPILED_SCHEMA_VERSION,
             $this->paranoiaLevel->value,
-            substr(sha1(implode('|', $ruleFiles)), 0, 12),
+            RuleSetLoader::fingerprint($sourceFiles),
         );
 
         $paranoiaLevel = $this->paranoiaLevel;
@@ -549,13 +561,19 @@ final class CoreRuleSetMatcher implements RequestMatcherInterface, CompiledDataC
         // cap fails here (before an artifact is written) instead of only at
         // hydration.
         $maxValuesPerCrsVariable = $this->maxValuesPerCrsVariable;
-        $ruleData = $this->compiledDataCache->load($identifier, $ruleFiles, static function () use ($paranoiaLevel, $rulesDirectory, $maxValuesPerCrsVariable): array {
+        $ruleData = $this->compiledDataCache->load($identifier, [], static function () use ($paranoiaLevel, $rulesDirectory, $maxValuesPerCrsVariable, $dataFiles): array {
             $parsed = RuleSetLoader::load($paranoiaLevel, $rulesDirectory, $maxValuesPerCrsVariable);
             $rules = [];
             foreach ($parsed->ids() as $id) {
                 $rule = $parsed->getRule($id);
                 if ($rule instanceof CoreRule) {
-                    $rules[] = $rule->toArray();
+                    $ruleArray = $rule->toArray();
+                    $phraseSet = self::compilePhraseSet($rule, $dataFiles);
+                    if ($phraseSet instanceof PhraseSet) {
+                        $ruleArray['phraseSet'] = $phraseSet->toArray();
+                    }
+
+                    $rules[] = $ruleArray;
                 }
             }
 
@@ -572,6 +590,44 @@ final class CoreRuleSetMatcher implements RequestMatcherInterface, CompiledDataC
         }
 
         return $coreRuleSet;
+    }
+
+    /**
+     * The phrases of a phrase operator with their prefilter, for the
+     * compiled rule data, so that a request neither reads and parses the
+     * phrase files nor searches every value phrase by phrase.
+     *
+     * A `@pmFromFile` rule gets them only when its file is one of the watched
+     * phrase files: the artifact is rebuilt when one of those changes, while
+     * any other file keeps being read whenever the rule is loaded.
+     *
+     * @param list<string> $watchedDataFiles
+     */
+    private static function compilePhraseSet(CoreRule $coreRule, array $watchedDataFiles): ?PhraseSet
+    {
+        $operator = strtolower($coreRule->operator);
+        if ($operator === '@pm') {
+            return PhraseSet::compile(PhraseListParser::parse($coreRule->operatorArgument));
+        }
+
+        if ($operator !== '@pmfromfile') {
+            return null;
+        }
+
+        $evaluator = new PhraseMatchFromFileEvaluator($coreRule->operatorArgument, $coreRule->contextFolder);
+        $sourceFile = $evaluator->sourceFile();
+        if ($sourceFile === null) {
+            return null; // unsafe operand: the rule fails closed on its own
+        }
+
+        foreach ($watchedDataFiles as $watchedDataFile) {
+            $resolved = realpath($watchedDataFile);
+            if ($sourceFile === ($resolved !== false ? $resolved : $watchedDataFile)) {
+                return is_file($sourceFile) && is_readable($sourceFile) ? PhraseSet::compile($evaluator->phrases()) : null;
+            }
+        }
+
+        return null;
     }
 
     /**

@@ -125,9 +125,9 @@ final class CoreRuleSetMatcherLazyTest extends TestCase
         $this->assertTrue($first->match(new ServerRequest('GET', '/admin'))->isMatch());
         $this->assertNotSame([], $cacheDirectory->getChildren(), 'The compiled artifact must be written.');
 
-        // Corrupt the source while keeping its mtime: a fresh process must be
-        // served entirely from the compiled artifact and never re-parse.
-        $ruleFile->setContent('SecRule GARBAGE');
+        // Corrupt the source while keeping its mtime and size: a fresh process
+        // must be served entirely from the compiled artifact and never re-parse.
+        $ruleFile->setContent(str_pad('SecRule GARBAGE', strlen(self::RULE_TEXT), '#'));
         $ruleFile->lastModified(1_000_000);
         clearstatcache();
         CompiledDataCache::clearProcessCache();
@@ -148,8 +148,8 @@ final class CoreRuleSetMatcherLazyTest extends TestCase
         // Seed a parseable but malformed artifact (a rule entry without the
         // expected keys) under the identifier the matcher will look up.
         $ruleFiles = \Flowd\PhirewallPresetOwaspCrs\RuleSetLoader::ruleFiles(ParanoiaLevel::Level1, $rulesDir);
-        $identifier = 'owasp-crs-v2-pl' . ParanoiaLevel::Level1->value . '-' . substr(sha1(implode('|', $ruleFiles)), 0, 12);
-        $compiledDataCache->load($identifier, $ruleFiles, static fn(): array => [['not' => 'a valid rule']]);
+        $identifier = 'owasp-crs-v3-pl' . ParanoiaLevel::Level1->value . '-' . \Flowd\PhirewallPresetOwaspCrs\RuleSetLoader::fingerprint($ruleFiles);
+        $compiledDataCache->load($identifier, [], static fn(): array => [['not' => 'a valid rule']]);
         CompiledDataCache::clearProcessCache();
 
         $matcher = CoreRuleSetMatcher::fromRuleFiles(ParanoiaLevel::Level1, $rulesDir);
@@ -169,8 +169,8 @@ final class CoreRuleSetMatcherLazyTest extends TestCase
 
         // Seed a well-formed but EMPTY artifact under the matcher's identifier.
         $ruleFiles = \Flowd\PhirewallPresetOwaspCrs\RuleSetLoader::ruleFiles(ParanoiaLevel::Level1, $rulesDir);
-        $identifier = 'owasp-crs-v2-pl' . ParanoiaLevel::Level1->value . '-' . substr(sha1(implode('|', $ruleFiles)), 0, 12);
-        $compiledDataCache->load($identifier, $ruleFiles, static fn(): array => []);
+        $identifier = 'owasp-crs-v3-pl' . ParanoiaLevel::Level1->value . '-' . \Flowd\PhirewallPresetOwaspCrs\RuleSetLoader::fingerprint($ruleFiles);
+        $compiledDataCache->load($identifier, [], static fn(): array => []);
         CompiledDataCache::clearProcessCache();
 
         $matcher = CoreRuleSetMatcher::fromRuleFiles(ParanoiaLevel::Level1, $rulesDir);
@@ -191,8 +191,8 @@ final class CoreRuleSetMatcherLazyTest extends TestCase
         // A rule with the right keys/top-level types but a non-string element in
         // "variables" - type-invalid, so fromArray() must reject it.
         $ruleFiles = \Flowd\PhirewallPresetOwaspCrs\RuleSetLoader::ruleFiles(ParanoiaLevel::Level1, $rulesDir);
-        $identifier = 'owasp-crs-v2-pl' . ParanoiaLevel::Level1->value . '-' . substr(sha1(implode('|', $ruleFiles)), 0, 12);
-        $compiledDataCache->load($identifier, $ruleFiles, static fn(): array => [[
+        $identifier = 'owasp-crs-v3-pl' . ParanoiaLevel::Level1->value . '-' . \Flowd\PhirewallPresetOwaspCrs\RuleSetLoader::fingerprint($ruleFiles);
+        $compiledDataCache->load($identifier, [], static fn(): array => [[
             'id' => 400001,
             'variables' => [123],
             'operator' => '@rx',

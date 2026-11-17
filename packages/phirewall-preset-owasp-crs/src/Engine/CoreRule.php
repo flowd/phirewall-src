@@ -7,6 +7,7 @@ namespace Flowd\PhirewallPresetOwaspCrs\Engine;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Operator\DetailedOperatorEvaluatorInterface;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Operator\OperatorEvaluatorFactory;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Operator\OperatorEvaluatorInterface;
+use Flowd\PhirewallPresetOwaspCrs\Engine\Operator\PhraseSet;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Variable\RequestVariableValues;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Variable\TargetSelector;
 use Psr\Http\Message\ServerRequestInterface;
@@ -55,9 +56,17 @@ final readonly class CoreRule
     private array $textExclusions;
 
     /**
+     * The target list as one text. Rules with the same text collect the same
+     * values from a request, see {@see collect()}.
+     */
+    private string $targetList;
+
+    /**
      * @param list<string> $variables
      * @param array<string, int|string|bool> $actions
      * @param list<string> $tags
+     * @param PhraseSet|null $phraseSet The phrases of a `@pm` / `@pmFromFile` operator, ready-made as the compiled
+     *                                  rule data delivers them; without, the operator parses its operand or reads its file.
      */
     public function __construct(
         public int $id,
@@ -70,6 +79,7 @@ final readonly class CoreRule
         public ?string $severity = null, // normalized severity name, null when the source had none
         public int $paranoiaLevel = 1,
         public array $tags = [],
+        private ?PhraseSet $phraseSet = null,
     ) {
         if ($anomalyScore < 1) {
             throw new \InvalidArgumentException(
@@ -87,6 +97,7 @@ final readonly class CoreRule
             $this->operator,
             $this->operatorArgument,
             $this->contextFolder,
+            $this->phraseSet,
         );
 
         $targets = [];
@@ -107,16 +118,19 @@ final readonly class CoreRule
 
         $this->targets = $targets;
         $this->textExclusions = $textExclusions;
+        $this->targetList = serialize($variables);
     }
 
     /**
      * The rule as var_export-able plain data for {@see \Flowd\Phirewall\Support\CompiledDataCache}.
      *
-     * @return array{id: int, variables: list<string>, operator: string, operatorArgument: string, actions: array<string, int|string|bool>, contextFolder: ?string, anomalyScore: int, severity: ?string, paranoiaLevel: int, tags: list<string>}
+     * A rule that was given its phrases ready-made carries them along as "phraseSet".
+     *
+     * @return array{id: int, variables: list<string>, operator: string, operatorArgument: string, actions: array<string, int|string|bool>, contextFolder: ?string, anomalyScore: int, severity: ?string, paranoiaLevel: int, tags: list<string>, phraseSet?: array{phrases: list<string>, prefilter: ?string}}
      */
     public function toArray(): array
     {
-        return [
+        $data = [
             'id' => $this->id,
             'variables' => $this->variables,
             'operator' => $this->operator,
@@ -128,6 +142,12 @@ final readonly class CoreRule
             'paranoiaLevel' => $this->paranoiaLevel,
             'tags' => $this->tags,
         ];
+
+        if ($this->phraseSet instanceof PhraseSet) {
+            $data['phraseSet'] = $this->phraseSet->toArray();
+        }
+
+        return $data;
     }
 
     /**
@@ -195,6 +215,10 @@ final readonly class CoreRule
             $validatedTags[] = $tag;
         }
 
+        // Throws for phrase data of the wrong shape: a rule hydrated with half its
+        // phrases would match less than the rule in the source.
+        $phraseSet = isset($data['phraseSet']) ? PhraseSet::fromArray($data['phraseSet']) : null;
+
         return new self(
             $id,
             $validatedVariables,
@@ -206,6 +230,7 @@ final readonly class CoreRule
             $severity,
             $paranoiaLevel,
             $validatedTags,
+            $phraseSet,
         );
     }
 
@@ -249,7 +274,7 @@ final readonly class CoreRule
 
         $requestVariableValues ??= new RequestVariableValues($serverRequest);
 
-        [$labels, $values] = $this->collectTargetValues($requestVariableValues, $ruleTargetSession);
+        [$labels, $values, $longestValue] = $this->collect($requestVariableValues, $ruleTargetSession);
 
         // Fail closed: if a variable this rule inspects was truncated at the per-variable
         // cap, the dropped portion is un-inspectable, so treat the oversized request as a
@@ -264,9 +289,11 @@ final readonly class CoreRule
         // un-inspectable, so head-only matching would let a payload evade by padding, and
         // the phrase/substring operators would scan the full value at unbounded cost. This
         // also keeps oversized subjects away from the regex engine, bounding backtracking.
-        foreach ($values as $index => $value) {
-            if (strlen($value) > $maxInspectableValueLength) {
-                return CoreRuleResult::failClosed($labels[$index] ?? null);
+        if ($longestValue > $maxInspectableValueLength) {
+            foreach ($values as $index => $value) {
+                if (strlen($value) > $maxInspectableValueLength) {
+                    return CoreRuleResult::failClosed($labels[$index] ?? null);
+                }
             }
         }
 
@@ -294,6 +321,56 @@ final readonly class CoreRule
         return $this->operatorEvaluator->evaluate($values)
             ? CoreRuleResult::matched(null, null)
             : CoreRuleResult::noMatch();
+    }
+
+    /**
+     * This rule's target values, with their labels and the length of the
+     * longest one. Most rules list the same targets as other rules, and what
+     * a target list yields depends on nothing else of the rule; so the list
+     * is assembled once per request and exclusion scope, and every further
+     * rule with the same list takes the result.
+     *
+     * @return array{0: list<?string>, 1: list<string>, 2: int}
+     */
+    private function collect(RequestVariableValues $requestVariableValues, ?RuleTargetSession $ruleTargetSession): array
+    {
+        if (!$ruleTargetSession instanceof RuleTargetSession) {
+            $collection = $requestVariableValues->collection($this->targetList);
+            if ($collection === null) {
+                $collection = $this->measured($this->collectTargetValues($requestVariableValues, null));
+                $requestVariableValues->rememberCollection($this->targetList, $collection);
+            }
+
+            return $collection;
+        }
+
+        $scope = $ruleTargetSession->collectionScope($this);
+        if ($scope === null) {
+            return $this->measured($this->collectTargetValues($requestVariableValues, $ruleTargetSession));
+        }
+
+        $key = $scope . ':' . $this->targetList;
+        $collection = $ruleTargetSession->collection($key);
+        if ($collection === null) {
+            $collection = $this->measured($this->collectTargetValues($requestVariableValues, $ruleTargetSession));
+            $ruleTargetSession->rememberCollection($key, $collection);
+        }
+
+        return $collection;
+    }
+
+    /**
+     * @param array{0: list<?string>, 1: list<string>} $collected
+     * @return array{0: list<?string>, 1: list<string>, 2: int}
+     */
+    private function measured(array $collected): array
+    {
+        $longestValue = 0;
+        foreach ($collected[1] as $value) {
+            $longestValue = max($longestValue, strlen($value));
+        }
+
+        return [$collected[0], $collected[1], $longestValue];
     }
 
     /**
