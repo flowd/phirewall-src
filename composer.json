@@ -28,6 +28,7 @@
         "mikey179/vfsstream": "^1.6.8",
         "nyholm/psr7": "^1.8",
         "phpstan/phpstan": "^1.12",
+        "phpstan/tally": "^1.0.1",
         "phpunit/phpunit": "^11.5",
         "rector/rector": "^1.2",
         "symplify/monorepo-builder": "^12.7"
@@ -50,6 +51,7 @@
     },
     "autoload-dev": {
         "psr-4": {
+            "Flowd\\PhirewallBenchmarks\\": "benchmarks/",
             "Flowd\\PhirewallPresetBadIps\\Tests\\": "packages/phirewall-preset-bad-ips/tests/",
             "Flowd\\PhirewallPresetBots\\Tests\\": "packages/phirewall-preset-bots/tests/",
             "Flowd\\PhirewallPresetOwaspCrs\\Tests\\": "packages/phirewall-preset-owasp-crs/tests/",
@@ -77,6 +79,7 @@
             "@phpunit:bad-ips"
         ],
         "phpstan": "vendor/bin/phpstan",
+        "benchmarks": "vendor/bin/tally run",
         "rector:check": "vendor/bin/rector --dry-run",
         "rector:fix": "vendor/bin/rector",
         "cs:check": "vendor/bin/php-cs-fixer fix --diff --dry-run --verbose",

@@ -2,6 +2,7 @@
 
 $finder = (new PhpCsFixer\Finder())
     ->in(glob(__DIR__ . '/packages/*/{src,tests}', GLOB_BRACE))
+    ->in(__DIR__ . '/benchmarks')
 ;
 
 return (new PhpCsFixer\Config())
