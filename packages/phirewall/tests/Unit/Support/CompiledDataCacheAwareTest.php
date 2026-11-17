@@ -132,8 +132,8 @@ final class CompiledDataCacheAwareTest extends TestCase
         // Seed the content-addressed artifact with tables for a DIFFERENT
         // address; the matcher must follow the artifact, proving it never
         // recompiles the entries.
-        $identifier = 'ip-matcher-v1-' . sha1(implode("\n", $entries));
-        $crafted = ['cidrs' => [], 'exact' => [inet_pton('192.0.2.1') => true]];
+        $identifier = 'ip-matcher-v2-' . sha1(implode("\n", $entries));
+        $crafted = ['exact' => [inet_pton('192.0.2.1') => true], 'networks' => []];
         $compiledDataCache->load($identifier, [], static fn(): array => $crafted);
         CompiledDataCache::clearProcessCache();
 
@@ -153,10 +153,10 @@ final class CompiledDataCacheAwareTest extends TestCase
         $compiledDataCache = new CompiledDataCache($root->url());
         $entries = ['203.0.113.0/24'];
 
-        // Seed a parseable but wrong-shape artifact (no cidrs/exact keys). The
-        // matcher must fall back to compiling from its entries, not match
+        // Seed a parseable but wrong-shape artifact (no exact/networks keys).
+        // The matcher must fall back to compiling from its entries, not match
         // nothing (which for a blocklist would be fail-open).
-        $identifier = 'ip-matcher-v1-' . sha1(implode("\n", $entries));
+        $identifier = 'ip-matcher-v2-' . sha1(implode("\n", $entries));
         $compiledDataCache->load($identifier, [], static fn(): array => ['unexpected' => true]);
         CompiledDataCache::clearProcessCache();
 
@@ -165,5 +165,55 @@ final class CompiledDataCacheAwareTest extends TestCase
 
         $request = new \Nyholm\Psr7\ServerRequest('GET', '/', [], null, '1.1', ['REMOTE_ADDR' => '203.0.113.99']);
         $this->assertTrue($ipMatcher->match($request)->isMatch());
+    }
+
+    public function testIpMatcherIgnoresArtifactsOfTheLookupTablesBeforeTheirCurrentForm(): void
+    {
+        $root = vfsStream::setup('cache');
+        $compiledDataCache = new CompiledDataCache($root->url());
+        $entries = ['203.0.113.0/24', '198.51.100.7'];
+
+        // An artifact as an earlier version wrote it, with tables that match nothing.
+        $compiledDataCache->load('ip-matcher-v1-' . sha1(implode("\n", $entries)), [], static fn(): array => ['cidrs' => [], 'exact' => []]);
+        CompiledDataCache::clearProcessCache();
+
+        $ipMatcher = new \Flowd\Phirewall\Matchers\IpMatcher($entries);
+        $ipMatcher->useCompiledDataCache($compiledDataCache);
+
+        $this->assertTrue($ipMatcher->match(new \Nyholm\Psr7\ServerRequest('GET', '/', [], null, '1.1', ['REMOTE_ADDR' => '203.0.113.99']))->isMatch());
+        $this->assertTrue($ipMatcher->match(new \Nyholm\Psr7\ServerRequest('GET', '/', [], null, '1.1', ['REMOTE_ADDR' => '198.51.100.7']))->isMatch());
+        $this->assertCount(2, $root->getChildren(), 'The current form gets an artifact of its own.');
+    }
+
+    public function testIpMatcherServedFromItsArtifactDecidesLikeWithoutACache(): void
+    {
+        $root = vfsStream::setup('cache');
+        $compiledDataCache = new CompiledDataCache($root->url());
+        $entries = ['203.0.113.0/24', '198.51.100.7', '::ffff:192.0.2.0/120', '2001:db8::/33', '10.32.0.0/11', '49.50.51.52', 'garbage'];
+        $addresses = ['203.0.113.1', '203.0.114.1', '198.51.100.7', '198.51.100.8', '192.0.2.200', '::ffff:192.0.2.200', '2001:db8:7fff::1', '2001:db8:8000::1', '10.63.0.1', '10.64.0.1', '49.50.51.52', '49.50.51.53', 'garbage'];
+
+        $decisions = static function (\Flowd\Phirewall\Matchers\IpMatcher $ipMatcher) use ($addresses): array {
+            $decisions = [];
+            foreach ($addresses as $address) {
+                $decisions[$address] = $ipMatcher->match(new \Nyholm\Psr7\ServerRequest('GET', '/', [], null, '1.1', ['REMOTE_ADDR' => $address]))->isMatch();
+            }
+
+            return $decisions;
+        };
+
+        $expected = $decisions(new \Flowd\Phirewall\Matchers\IpMatcher($entries));
+        $this->assertContains(true, $expected);
+        $this->assertContains(false, $expected);
+
+        // The first matcher writes the artifact, the second one reads it.
+        foreach ([1, 2] as $run) {
+            CompiledDataCache::clearProcessCache();
+            $ipMatcher = new \Flowd\Phirewall\Matchers\IpMatcher($entries);
+            $ipMatcher->useCompiledDataCache($compiledDataCache);
+
+            $this->assertSame($expected, $decisions($ipMatcher), 'run ' . $run);
+        }
+
+        $this->assertCount(1, $root->getChildren());
     }
 }
