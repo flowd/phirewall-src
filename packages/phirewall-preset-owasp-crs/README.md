@@ -374,8 +374,11 @@ a single pass whether a value contains any phrase of the list. Only a value
 the prefilter does not rule out is searched phrase by phrase, so it never
 changes what a rule finds. The artifact is rebuilt, and takes the place of
 the previous one, when a rule file or one of those phrase files changes, is
-added or is removed. Phrase files with another
-name are read whenever the rules are loaded; name your own `*.data`.
+added or is removed. A change is recognised by the modification time and
+size of a file: one replaced by a file of the same size and time is not
+noticed, so clear the cache directory on deployment if yours can produce that.
+Phrase files with another name are read whenever the rules are loaded; name
+your own `*.data`.
 
 ## What is included (and what is not)
 
