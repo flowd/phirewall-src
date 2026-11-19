@@ -58,7 +58,7 @@ final class IpListBench
     }
 
     /** The list is parsed on every request. */
-    #[Expected(instructions: '6.025M', cycles: '7.221M', memory: '84.36KiB')]
+    #[Expected(instructions: '6.025M', cycles: '6.431M', memory: '84.36KiB')]
     public function benchPerRequestWithoutCache(): void
     {
         $this->meter->exclude(PhpFpm::startRequest(...));

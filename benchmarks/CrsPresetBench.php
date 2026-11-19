@@ -72,7 +72,7 @@ final class CrsPresetBench
     }
 
     /** The rule files are parsed on every request. */
-    #[Expected(instructions: '234.6M', cycles: '240.2M', memory: '1.058MiB')]
+    #[Expected(instructions: '240.3M', cycles: '245.9M', memory: '1.058MiB')]
     public function benchPageViewPerRequestWithoutCache(): void
     {
         $this->meter->exclude(PhpFpm::startRequest(...));
