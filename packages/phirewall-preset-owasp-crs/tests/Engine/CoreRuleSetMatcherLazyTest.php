@@ -7,6 +7,7 @@ namespace Flowd\PhirewallPresetOwaspCrs\Tests\Engine;
 use Flowd\Phirewall\Support\CompiledDataCache;
 use Flowd\PhirewallPresetOwaspCrs\Engine\CoreRuleSetMatcher;
 use Flowd\PhirewallPresetOwaspCrs\ParanoiaLevel;
+use Flowd\PhirewallPresetOwaspCrs\RuleSetLoader;
 use Nyholm\Psr7\ServerRequest;
 use org\bovigo\vfs\vfsStream;
 use org\bovigo\vfs\vfsStreamDirectory;
@@ -33,6 +34,23 @@ final class CoreRuleSetMatcherLazyTest extends TestCase
         $ruleFile->lastModified(1_000_000);
 
         return [$root, $ruleFile];
+    }
+
+    /**
+     * Puts rule data in the place of the artifact the matcher will read, as
+     * made from the rule files as they are now.
+     *
+     * @param array<mixed> $rules
+     */
+    private function seedArtifact(CompiledDataCache $compiledDataCache, string $rulesDirectory, array $rules): void
+    {
+        clearstatcache();
+        $artifact = [
+            'sources' => RuleSetLoader::fingerprint(RuleSetLoader::ruleFiles(ParanoiaLevel::Level1, $rulesDirectory)),
+            'rules' => $rules,
+        ];
+        $compiledDataCache->load('owasp-crs-v3-pl1-' . sha1($rulesDirectory), [], static fn(): array => $artifact);
+        CompiledDataCache::clearProcessCache();
     }
 
     public function testLazyMatcherParsesOnFirstMatchOnly(): void
@@ -125,9 +143,9 @@ final class CoreRuleSetMatcherLazyTest extends TestCase
         $this->assertTrue($first->match(new ServerRequest('GET', '/admin'))->isMatch());
         $this->assertNotSame([], $cacheDirectory->getChildren(), 'The compiled artifact must be written.');
 
-        // Corrupt the source while keeping its mtime: a fresh process must be
-        // served entirely from the compiled artifact and never re-parse.
-        $ruleFile->setContent('SecRule GARBAGE');
+        // Corrupt the source while keeping its mtime and size: a fresh process
+        // must be served entirely from the compiled artifact and never re-parse.
+        $ruleFile->setContent(str_pad('SecRule GARBAGE', strlen(self::RULE_TEXT), '#'));
         $ruleFile->lastModified(1_000_000);
         clearstatcache();
         CompiledDataCache::clearProcessCache();
@@ -147,10 +165,7 @@ final class CoreRuleSetMatcherLazyTest extends TestCase
 
         // Seed a parseable but malformed artifact (a rule entry without the
         // expected keys) under the identifier the matcher will look up.
-        $ruleFiles = \Flowd\PhirewallPresetOwaspCrs\RuleSetLoader::ruleFiles(ParanoiaLevel::Level1, $rulesDir);
-        $identifier = 'owasp-crs-v2-pl' . ParanoiaLevel::Level1->value . '-' . substr(sha1(implode('|', $ruleFiles)), 0, 12);
-        $compiledDataCache->load($identifier, $ruleFiles, static fn(): array => [['not' => 'a valid rule']]);
-        CompiledDataCache::clearProcessCache();
+        $this->seedArtifact($compiledDataCache, $rulesDir, [['not' => 'a valid rule']]);
 
         $matcher = CoreRuleSetMatcher::fromRuleFiles(ParanoiaLevel::Level1, $rulesDir);
         $matcher->useCompiledDataCache($compiledDataCache);
@@ -168,10 +183,7 @@ final class CoreRuleSetMatcherLazyTest extends TestCase
         $compiledDataCache = new CompiledDataCache($cacheDirectory->url());
 
         // Seed a well-formed but EMPTY artifact under the matcher's identifier.
-        $ruleFiles = \Flowd\PhirewallPresetOwaspCrs\RuleSetLoader::ruleFiles(ParanoiaLevel::Level1, $rulesDir);
-        $identifier = 'owasp-crs-v2-pl' . ParanoiaLevel::Level1->value . '-' . substr(sha1(implode('|', $ruleFiles)), 0, 12);
-        $compiledDataCache->load($identifier, $ruleFiles, static fn(): array => []);
-        CompiledDataCache::clearProcessCache();
+        $this->seedArtifact($compiledDataCache, $rulesDir, []);
 
         $matcher = CoreRuleSetMatcher::fromRuleFiles(ParanoiaLevel::Level1, $rulesDir);
         $matcher->useCompiledDataCache($compiledDataCache);
@@ -190,9 +202,7 @@ final class CoreRuleSetMatcherLazyTest extends TestCase
 
         // A rule with the right keys/top-level types but a non-string element in
         // "variables" - type-invalid, so fromArray() must reject it.
-        $ruleFiles = \Flowd\PhirewallPresetOwaspCrs\RuleSetLoader::ruleFiles(ParanoiaLevel::Level1, $rulesDir);
-        $identifier = 'owasp-crs-v2-pl' . ParanoiaLevel::Level1->value . '-' . substr(sha1(implode('|', $ruleFiles)), 0, 12);
-        $compiledDataCache->load($identifier, $ruleFiles, static fn(): array => [[
+        $this->seedArtifact($compiledDataCache, $rulesDir, [[
             'id' => 400001,
             'variables' => [123],
             'operator' => '@rx',
@@ -200,7 +210,6 @@ final class CoreRuleSetMatcherLazyTest extends TestCase
             'actions' => ['deny' => true],
             'contextFolder' => null,
         ]]);
-        CompiledDataCache::clearProcessCache();
 
         $matcher = CoreRuleSetMatcher::fromRuleFiles(ParanoiaLevel::Level1, $rulesDir);
         $matcher->useCompiledDataCache($compiledDataCache);
@@ -208,11 +217,86 @@ final class CoreRuleSetMatcherLazyTest extends TestCase
         $this->assertTrue($matcher->match(new ServerRequest('GET', '/admin'))->isMatch());
     }
 
+    public function testTheSeededArtifactIsTheOneTheMatcherReads(): void
+    {
+        // Guards the fallback tests above: a wrong name or source state there would pass for the wrong reason.
+        [$root] = $this->rulesDirectory();
+        $rulesDir = $root->url() . '/rules';
+        $compiledDataCache = new CompiledDataCache(vfsStream::newDirectory('cache')->at($root)->url());
+
+        $this->seedArtifact($compiledDataCache, $rulesDir, [[
+            'id' => 400002,
+            'variables' => ['REQUEST_URI'],
+            'operator' => '@rx',
+            'operatorArgument' => '^/seeded',
+            'actions' => ['deny' => true],
+            'contextFolder' => null,
+        ]]);
+
+        $matcher = CoreRuleSetMatcher::fromRuleFiles(ParanoiaLevel::Level1, $rulesDir);
+        $matcher->useCompiledDataCache($compiledDataCache);
+
+        $this->assertTrue($matcher->match(new ServerRequest('GET', '/seeded'))->isMatch());
+        $this->assertFalse($matcher->match(new ServerRequest('GET', '/admin'))->isMatch());
+    }
+
+    public function testAnUnusableArtifactIsReplacedByOneThatServesTheNextProcess(): void
+    {
+        [$root, $ruleFile] = $this->rulesDirectory();
+        $rulesDir = $root->url() . '/rules';
+        $cacheDirectory = vfsStream::newDirectory('cache')->at($root);
+        $compiledDataCache = new CompiledDataCache($cacheDirectory->url());
+        $this->seedArtifact($compiledDataCache, $rulesDir, [['not' => 'a valid rule']]);
+
+        $first = CoreRuleSetMatcher::fromRuleFiles(ParanoiaLevel::Level1, $rulesDir);
+        $first->useCompiledDataCache($compiledDataCache);
+        $this->assertTrue($first->match(new ServerRequest('GET', '/admin'))->isMatch());
+
+        // The source is unreadable as rules now, with the same time and size:
+        // the next process can only answer from the artifact.
+        $ruleFile->setContent(str_pad('SecRule GARBAGE', strlen(self::RULE_TEXT), '#'));
+        $ruleFile->lastModified(1_000_000);
+        clearstatcache();
+        CompiledDataCache::clearProcessCache();
+
+        $second = CoreRuleSetMatcher::fromRuleFiles(ParanoiaLevel::Level1, $rulesDir);
+        $second->useCompiledDataCache($compiledDataCache);
+
+        $this->assertTrue($second->match(new ServerRequest('GET', '/admin'))->isMatch());
+        $this->assertCount(1, $cacheDirectory->getChildren(), 'The artifact is replaced, not added to.');
+    }
+
+    public function testAChangedRuleFileIsNoticedByAProcessThatLookedAtItLast(): void
+    {
+        [$root, $ruleFile] = $this->rulesDirectory();
+        $rulesDir = $root->url() . '/rules';
+        $compiledDataCache = new CompiledDataCache(vfsStream::newDirectory('cache')->at($root)->url());
+
+        // A long-running worker that builds a new Config: the second matcher is
+        // served from the process, and the only rule file is the last file PHP
+        // asked about, so PHP remembers its time and size.
+        foreach ([1, 2] as $ignored) {
+            $matcher = CoreRuleSetMatcher::fromRuleFiles(ParanoiaLevel::Level1, $rulesDir);
+            $matcher->useCompiledDataCache($compiledDataCache);
+            $this->assertTrue($matcher->match(new ServerRequest('GET', '/admin'))->isMatch());
+        }
+
+        // No clearstatcache() here: the matcher must not rely on what PHP remembers.
+        $ruleFile->setContent("SecRule REQUEST_URI \"@rx ^/private\\b\" \"id:400001,phase:2,deny,msg:'Block private path'\"");
+        $ruleFile->lastModified(1_000_100);
+
+        $third = CoreRuleSetMatcher::fromRuleFiles(ParanoiaLevel::Level1, $rulesDir);
+        $third->useCompiledDataCache($compiledDataCache);
+
+        $this->assertTrue($third->match(new ServerRequest('GET', '/private'))->isMatch());
+        $this->assertFalse($third->match(new ServerRequest('GET', '/admin'))->isMatch());
+    }
+
     public function testEagerConstructionIgnoresTheCompiledDataCache(): void
     {
         [$root] = $this->rulesDirectory();
         $eager = new CoreRuleSetMatcher(
-            \Flowd\PhirewallPresetOwaspCrs\RuleSetLoader::load(ParanoiaLevel::Level1, $root->url() . '/rules'),
+            RuleSetLoader::load(ParanoiaLevel::Level1, $root->url() . '/rules'),
         );
         $eager->useCompiledDataCache(new CompiledDataCache($root->url() . '/cache'));
 

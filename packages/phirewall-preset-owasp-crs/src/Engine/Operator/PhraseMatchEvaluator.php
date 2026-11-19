@@ -9,12 +9,14 @@ namespace Flowd\PhirewallPresetOwaspCrs\Engine\Operator;
  */
 final readonly class PhraseMatchEvaluator implements DetailedOperatorEvaluatorInterface
 {
-    /** @var list<string> Cached parsed phrase list. */
-    private array $phrases;
+    private PhraseSet $phraseSet;
 
-    public function __construct(string $phraseList)
+    /**
+     * @param PhraseSet|null $phraseSet The already parsed phrases (from the compiled rule data); parsed from $phraseList when omitted.
+     */
+    public function __construct(string $phraseList, ?PhraseSet $phraseSet = null)
     {
-        $this->phrases = PhraseListParser::parse($phraseList);
+        $this->phraseSet = $phraseSet ?? PhraseSet::withoutPrefilter(PhraseListParser::parse($phraseList));
     }
 
     /** @param list<string> $values */
@@ -26,7 +28,7 @@ final readonly class PhraseMatchEvaluator implements DetailedOperatorEvaluatorIn
     /** @param list<string> $values */
     public function outcome(array $values): OperatorResult
     {
-        return self::firstMatch($values, $this->phrases);
+        return $this->phraseSet->firstMatch($values);
     }
 
     /**

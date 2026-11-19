@@ -275,7 +275,10 @@ transformation depends on request context. The three-parameter
 
 Manipulators run after exclusions. Global manipulators are applied once per
 variable per request and shared across all rules; per-rule manipulators
-specialize from that shared result.
+specialize from that shared result. Conditions of exclusions are shared in the
+same way: a global one is asked once per request for an entry, one by tag once
+for all rules the same tag exclusions apply to. Conditions and manipulators
+must depend on their arguments only; how often one is called is not defined.
 
 ### Logging
 
@@ -336,12 +339,13 @@ positives you find, then raise the level.
 
 ### Skipping the per-request parse
 
-Parsing the CRS rule files costs several milliseconds and, under PHP-FPM, would
-run on every request. Both presets therefore load lazily: the parse happens on
-the first evaluated request. To also skip that first parse per process, give
-your `Config` a compiled-data cache (phirewall 0.9 or newer) - the parsed rules are
-then served from an OPcache-backed artifact and re-parsed only when a rule file
-changes:
+Parsing the CRS rule files and reading the phrase files of the `@pmFromFile`
+rules costs about ten milliseconds at paranoia level 1 and, under PHP-FPM,
+would run on every request. Both presets therefore load lazily: the parse
+happens on the first evaluated request. To also skip that first parse per
+process, give your `Config` a compiled-data cache (phirewall 0.9 or newer). The
+rules are then served from an OPcache-backed artifact, which leaves about one
+millisecond per request for loading and evaluating them:
 
 ```php
 use Flowd\Phirewall\Support\CompiledDataCache;
@@ -362,6 +366,16 @@ $config->blocklists->addRule(new BlocklistRule('owasp', $matcher));
 
 A matcher constructed with an already parsed `CoreRuleSet` keeps the eager
 behaviour and ignores the cache.
+
+The artifact holds the parsed rules and, ready to use, the phrases of the
+`@pm` rules and of the `@pmFromFile` rules whose file is a `*.data` file of
+the rules directory, each list with a prefilter: one expression that tells in
+a single pass whether a value contains any phrase of the list. Only a value
+the prefilter does not rule out is searched phrase by phrase, so it never
+changes what a rule finds. The artifact is rebuilt, and takes the place of
+the previous one, when a rule file or one of those phrase files changes, is
+added or is removed. Phrase files with another
+name are read whenever the rules are loaded; name your own `*.data`.
 
 ## What is included (and what is not)
 

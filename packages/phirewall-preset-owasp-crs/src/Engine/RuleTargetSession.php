@@ -12,8 +12,11 @@ use Flowd\PhirewallPresetOwaspCrs\Engine\Variable\RequestVariableValues;
  *
  * Entries filtered by the global exclusions/manipulators are computed once per
  * variable and shared across all rules; rules with id- or tag-specific
- * configuration specialize from that shared result, and exclusions armed by
- * matched runtime exclusion rules apply last. Filtering happens after the
+ * configuration specialize from that shared result, once per filter and
+ * variable (rules selected by the same tags share a filter, see
+ * {@see RuleTargetConfig}), and exclusions armed by matched runtime exclusion
+ * rules apply last. A condition or manipulator is therefore asked once per
+ * request for an entry, not once per rule. Filtering happens after the
  * collection cap in {@see RequestVariableValues::entriesFor()}, so an
  * excluded parameter still counts toward the cap (exclusion cannot "un-cap").
  */
@@ -21,6 +24,28 @@ final class RuleTargetSession
 {
     /** @var array<string, list<array{name: ?string, value: string, isNameEntry?: bool}>> */
     private array $globalCache = [];
+
+    /**
+     * The rule-specific filters seen so far, by object id. The session holds
+     * on to them, so an id stands for the same filter as long as it lives.
+     *
+     * @var array<int, RuleTargetFilter>
+     */
+    private array $ruleSpecificFilters = [];
+
+    /**
+     * Entries after a rule-specific filter, by the filter's object id and by variable.
+     *
+     * @var array<int, array<string, list<array{name: ?string, value: string, isNameEntry?: bool}>>>
+     */
+    private array $ruleSpecificCache = [];
+
+    /**
+     * What rules collected, by {@see collectionScope()} and the text of their target list.
+     *
+     * @var array<string, array{0: list<?string>, 1: list<string>, 2: int}>
+     */
+    private array $collections = [];
 
     public function __construct(
         private readonly RuleTargetConfig $ruleTargetConfig,
@@ -48,7 +73,12 @@ final class RuleTargetSession
 
         $ruleSpecificFilter = $this->ruleTargetConfig->ruleSpecificFilter($coreRule);
         if ($ruleSpecificFilter instanceof RuleTargetFilter) {
-            $entries = $ruleSpecificFilter->apply($variable, $entries, $this->requestVariableValues->serverRequest());
+            $filterId = $this->filterId($ruleSpecificFilter);
+            if (!isset($this->ruleSpecificCache[$filterId][$variable])) {
+                $this->ruleSpecificCache[$filterId][$variable] = $ruleSpecificFilter->apply($variable, $entries, $this->requestVariableValues->serverRequest());
+            }
+
+            $entries = $this->ruleSpecificCache[$filterId][$variable];
         }
 
         if ($this->runtimeExclusions instanceof RuntimeExclusions) {
@@ -56,6 +86,52 @@ final class RuleTargetSession
         }
 
         return $entries;
+    }
+
+    /**
+     * Names everything of this session that decides which entries a rule
+     * sees: two rules with the same scope and the same target list collect
+     * the same values. Null when that cannot be said in advance, because
+     * exclusions armed for this request select rules one by one.
+     *
+     * @internal
+     */
+    public function collectionScope(CoreRule $coreRule): ?string
+    {
+        if ($this->runtimeExclusions instanceof RuntimeExclusions) {
+            return null;
+        }
+
+        $ruleSpecificFilter = $this->ruleTargetConfig->ruleSpecificFilter($coreRule);
+        return $ruleSpecificFilter instanceof RuleTargetFilter ? (string) $this->filterId($ruleSpecificFilter) : '';
+    }
+
+    private function filterId(RuleTargetFilter $ruleTargetFilter): int
+    {
+        $filterId = spl_object_id($ruleTargetFilter);
+        $this->ruleSpecificFilters[$filterId] ??= $ruleTargetFilter;
+
+        return $filterId;
+    }
+
+    /**
+     * @internal
+     *
+     * @return array{0: list<?string>, 1: list<string>, 2: int}|null
+     */
+    public function collection(string $key): ?array
+    {
+        return $this->collections[$key] ?? null;
+    }
+
+    /**
+     * @internal
+     *
+     * @param array{0: list<?string>, 1: list<string>, 2: int} $collection
+     */
+    public function rememberCollection(string $key, array $collection): void
+    {
+        $this->collections[$key] = $collection;
     }
 
     /**

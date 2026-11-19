@@ -3,8 +3,8 @@
 Phirewall runs on every request, so its cost matters. This page shows what a
 `decide()` call costs in isolation, what that means under load, and what is
 left of it inside a real application. The short version: a typical rule set
-costs single-digit **microseconds** per request, OWASP CRS costs a
-**millisecond or two**, and a blocked request is cheaper than a served one.
+costs single-digit **microseconds** per request, OWASP CRS costs about a
+**millisecond**, and a blocked request is cheaper than a served one.
 
 ## Engine cost per request
 
@@ -69,34 +69,49 @@ cheap lookup, not the write.
 
 ## OWASP CRS cost
 
-The [CRS preset](/features/owasp-crs) evaluates a few hundred ModSecurity
-rules per request, most of them regular expressions over your request
-parameters, so its cost scales with the number and size of arguments:
+The [CRS preset](/features/owasp-crs) evaluates more than a hundred
+ModSecurity rules per request at paranoia level 1, most of them regular
+expressions over your request parameters, so its cost scales with the number
+and size of arguments. Two numbers matter, depending on how PHP runs:
 
-| Request shape (paranoia level 1, no match) | Cost per request |
-|--------------------------------------------|-----------------:|
-| GET without parameters | ~0.1 ms |
-| GET with 3 query parameters | ~1.0 ms |
-| POST with 8 form fields | ~2.4 ms |
-| SQL injection attempt (matches, early exit) | ~0.4 ms |
+- **Under PHP-FPM** every request builds the firewall anew. The cost per
+  request is loading the rules from the
+  [compiled data cache](/features/owasp-crs#caching) plus evaluating them.
+- **In a long-running worker** (FrankenPHP, RoadRunner, Swoole) the rules are
+  built once per worker; only the evaluation is left.
 
-Parsing the rule files costs a few milliseconds once; with the
-[compiled data cache](/features/owasp-crs#caching) that price is paid on the
-first request after a deployment, not on every request. Combining CRS with a
-fail2ban preset also pays off here: once a probing client is banned, the CRS
-engine no longer runs for it - the request is rejected by the cheap
-banned-key lookup from the table above.
+| Request shape (paranoia level 1) | PHP-FPM, per request | Long-running worker |
+|----------------------------------|---------------------:|--------------------:|
+| GET without parameters | 0.8 ms | 0.08 ms |
+| GET with 3 query parameters | 0.9 ms | 0.17 ms |
+| POST with 8 form fields | 1.1 ms | 0.33 ms |
+| SQL injection attempt (blocked) | 0.9 ms | 0.10 ms |
+
+Measured on PHP 8.5 with OPcache and PCRE JIT in a Linux container on an ARM
+machine, code on local disk. The PHP-FPM column is the whole firewall for one
+request, from loading its classes to the decision (median of 120 requests,
+each starting without any state of the previous one); the worker column is one
+`decide()` call on a firewall that is already built.
+
+The compiled data cache is what makes the PHP-FPM column possible: it holds
+the parsed rules and the phrase lists of the rules that search for file names
+and commands, ready to use. Without it the rule files are parsed and the
+phrase files read on every request, which cost 10 ms in the same setup.
+
+Combining CRS with a fail2ban preset also pays off here: once a probing client
+is banned, the CRS engine no longer runs for it - the request is rejected by
+the cheap banned-key lookup from the table above.
 
 ## What that means under load
 
 Cost per request times requests per second gives the CPU share the firewall
 needs. For the two typical setups:
 
-| Sustained load | 6 rules (~8 us) | CRS PL1 (~1 ms) |
-|----------------|----------------:|----------------:|
-| 10 req/s | 0.008% of one core | 1% of one core |
-| 100 req/s | 0.08% of one core | 10% of one core |
-| 1,000 req/s | 0.8% of one core | one full core |
+| Sustained load | 6 rules (~8 us) | CRS PL1 under PHP-FPM (~1 ms) | CRS PL1 in a worker (~0.2 ms) |
+|----------------|----------------:|------------------------------:|------------------------------:|
+| 10 req/s | 0.008% of one core | 1% of one core | 0.2% of one core |
+| 100 req/s | 0.08% of one core | 10% of one core | 2% of one core |
+| 1,000 req/s | 0.8% of one core | one full core | 20% of one core |
 
 Rule-of-thumb: counting rules are free at any realistic load; give CRS a
 thought once you serve hundreds of uncached requests per second, and scope it
@@ -156,8 +171,15 @@ or content queries run.
   CRS `@rx` operators rely on it. See
   [PCRE JIT](/features/owasp-crs#pcre-jit).
 - **Compiled data cache** for preset packages, so CRS and bad-IP data are not
-  re-parsed per request. See
+  re-parsed per request. For CRS this is the difference between about one
+  millisecond and about ten. See
   [Caching expensive preset data](/advanced/presets#caching-expensive-preset-data).
+- **An optimized autoloader** (`composer dump-autoload --classmap-authoritative`,
+  or `--optimize`) where file checks are slow. Composer's default autoloader
+  asks the file system where each class is; the firewall with CRS loads more
+  than a hundred classes. On a local disk that is negligible, on a slow mount (Docker on
+  macOS or Windows with the code on the host, network file systems) it can
+  cost more than everything else on this page together.
 - **Pick the store deliberately**: APCu for a single server (as fast as
   in-memory), Redis when counters and bans must be shared (~0.1 ms of ban
   lookups per request, ~0.2 ms per counter write). PDO/MySQL works without

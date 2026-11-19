@@ -77,6 +77,52 @@ final class RuleSetLoader
         return $ruleFiles;
     }
 
+    /**
+     * Absolute paths of the phrase files (`*.data`) in the rules directory,
+     * sorted by name. Rules refer to them with `@pmFromFile`.
+     *
+     * @return list<string>
+     */
+    public static function dataFiles(string $rulesDirectory): array
+    {
+        $entries = is_dir($rulesDirectory) ? scandir($rulesDirectory) : false;
+        if ($entries === false) {
+            return [];
+        }
+
+        $dataFiles = [];
+        foreach ($entries as $entry) {
+            if (str_ends_with($entry, '.data')) {
+                $dataFiles[] = rtrim($rulesDirectory, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $entry;
+            }
+        }
+
+        sort($dataFiles, SORT_STRING);
+        return $dataFiles;
+    }
+
+    /**
+     * Names one state of a set of files: their paths, modification times and
+     * sizes. It changes when a file is added, removed, or changed in time or
+     * size, whichever file it is and whether its new time is the newest of
+     * all or not.
+     *
+     * @param list<string> $files
+     */
+    public static function fingerprint(array $files): string
+    {
+        // PHP remembers the file it was asked about last, in a worker across changes to it.
+        clearstatcache();
+
+        $state = '';
+        foreach ($files as $file) {
+            // Asked in this order, the three answers come from one look at the file.
+            $state .= $file . "\0" . (is_file($file) ? filemtime($file) . ':' . filesize($file) : 'missing') . "\n";
+        }
+
+        return sha1($state);
+    }
+
     public static function defaultRulesDirectory(): string
     {
         return dirname(__DIR__) . '/resources/rules';

@@ -46,6 +46,13 @@ final class RequestVariableValues
      */
     private array $cappedVariables = [];
 
+    /**
+     * What rules collected from this request, by the text of their target list.
+     *
+     * @var array<string, array{0: list<?string>, 1: list<string>, 2: int}>
+     */
+    private array $collections = [];
+
     private readonly int $maxValuesPerCrsVariable;
 
     /**
@@ -127,6 +134,31 @@ final class RequestVariableValues
         }
 
         return $this->entriesByVariableName[$variableName] = $collected;
+    }
+
+    /**
+     * What a rule with this target list collected from the request, when a
+     * rule with the same list already did: labels, values and the length of
+     * the longest value. Rules that list the same targets see the same
+     * values, so the list is worked out once per request.
+     *
+     * @internal Only valid without target exclusions and manipulators; with them {@see \Flowd\PhirewallPresetOwaspCrs\Engine\RuleTargetSession} keeps the collections.
+     *
+     * @return array{0: list<?string>, 1: list<string>, 2: int}|null
+     */
+    public function collection(string $targetList): ?array
+    {
+        return $this->collections[$targetList] ?? null;
+    }
+
+    /**
+     * @internal
+     *
+     * @param array{0: list<?string>, 1: list<string>, 2: int} $collection
+     */
+    public function rememberCollection(string $targetList, array $collection): void
+    {
+        $this->collections[$targetList] = $collection;
     }
 
     /**

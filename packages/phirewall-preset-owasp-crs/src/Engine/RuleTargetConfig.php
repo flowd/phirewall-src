@@ -15,6 +15,11 @@ use Flowd\PhirewallPresetOwaspCrs\Engine\Variable\TargetExclusion;
  * compiled-rule cache artifact. Per-rule filters are memoized and invalidated
  * by a generation counter so exclusions can be added between requests in
  * long-running workers.
+ *
+ * Rules that are only reached through the same tags share one filter object.
+ * {@see RuleTargetSession} filters the entries of a variable once per filter
+ * and request, so an exclusion by tag is worked out once for all rules that
+ * carry the tag, not once per rule.
  */
 final class RuleTargetConfig
 {
@@ -39,6 +44,9 @@ final class RuleTargetConfig
 
     /** @var array<int, array{0: int, 1: ?RuleTargetFilter}> Per-rule-id cache stamped with the generation it was built for. */
     private array $ruleFilterCache = [];
+
+    /** @var array<string, RuleTargetFilter> Filters of rules without configuration of their own, by the tags that select them. */
+    private array $tagFilterCache = [];
 
     public function isEmpty(): bool
     {
@@ -99,8 +107,50 @@ final class RuleTargetConfig
             return $cached[1];
         }
 
-        $exclusionsByVariable = $this->exclusionsByRuleId[$coreRule->id] ?? [];
+        $tags = [];
         foreach ($coreRule->tags as $tag) {
+            if (isset($this->exclusionsByTag[$tag])) {
+                $tags[] = $tag;
+            }
+        }
+
+        $exclusionsByVariable = $this->exclusionsByRuleId[$coreRule->id] ?? [];
+        $manipulators = $this->manipulatorsByRuleId[$coreRule->id] ?? [];
+
+        if ($exclusionsByVariable === [] && $manipulators === []) {
+            $filter = $tags === [] ? null : $this->tagFilter($tags);
+        } else {
+            $filter = new RuleTargetFilter($this->withTagExclusions($exclusionsByVariable, $tags), $manipulators);
+        }
+
+        $this->ruleFilterCache[$coreRule->id] = [$this->generation, $filter];
+
+        return $filter;
+    }
+
+    /**
+     * The one filter for all rules that have exactly these tags with
+     * exclusions, in this order, and nothing registered by their id. The
+     * order is part of it: exclusions are asked tag by tag as the rule lists
+     * its tags, and rules that list them alike are the ones that can share.
+     *
+     * @param non-empty-list<string> $tags
+     */
+    private function tagFilter(array $tags): RuleTargetFilter
+    {
+        $tags = array_values(array_unique($tags));
+
+        return $this->tagFilterCache[serialize($tags)] ??= new RuleTargetFilter($this->withTagExclusions([], $tags), []);
+    }
+
+    /**
+     * @param array<string, list<TargetExclusion>> $exclusionsByVariable
+     * @param list<string> $tags
+     * @return array<string, list<TargetExclusion>>
+     */
+    private function withTagExclusions(array $exclusionsByVariable, array $tags): array
+    {
+        foreach ($tags as $tag) {
             foreach ($this->exclusionsByTag[$tag] ?? [] as $variable => $exclusions) {
                 foreach ($exclusions as $exclusion) {
                     $exclusionsByVariable[$variable][] = $exclusion;
@@ -108,15 +158,7 @@ final class RuleTargetConfig
             }
         }
 
-        $manipulators = $this->manipulatorsByRuleId[$coreRule->id] ?? [];
-
-        $filter = $exclusionsByVariable === [] && $manipulators === []
-            ? null
-            : new RuleTargetFilter($exclusionsByVariable, $manipulators);
-
-        $this->ruleFilterCache[$coreRule->id] = [$this->generation, $filter];
-
-        return $filter;
+        return $exclusionsByVariable;
     }
 
     private function invalidate(): void
@@ -124,5 +166,6 @@ final class RuleTargetConfig
         ++$this->generation;
         $this->globalFilter = null;
         $this->ruleFilterCache = [];
+        $this->tagFilterCache = [];
     }
 }

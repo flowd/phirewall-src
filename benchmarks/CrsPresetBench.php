@@ -53,19 +53,19 @@ final class CrsPresetBench
         Outcome::mustBlock($this->firewall->decide($this->sqlInjection));
     }
 
-    #[Expected(instructions: '22.77M', cycles: '23.84M', memory: '19.79KiB')]
+    #[Expected(instructions: '4.866M', cycles: '5.329M', memory: '75.67KiB')]
     public function benchPageViewInAWorker(): void
     {
         $this->firewall->decide($this->pageView);
     }
 
-    #[Expected(instructions: '32.41M', cycles: '33.63M', memory: '22.91KiB')]
+    #[Expected(instructions: '7.640M', cycles: '8.145M', memory: '84.95KiB')]
     public function benchFormPostInAWorker(): void
     {
         $this->firewall->decide($this->formPost);
     }
 
-    #[Expected(instructions: '14.21M', cycles: '15.00M', memory: '16.86KiB')]
+    #[Expected(instructions: '3.184M', cycles: '3.586M', memory: '55.30KiB')]
     public function benchSqlInjectionInAWorker(): void
     {
         $this->firewall->decide($this->sqlInjection);
@@ -81,7 +81,7 @@ final class CrsPresetBench
     }
 
     /** The parsed rules come from the compiled-data cache. */
-    #[Expected(instructions: '28.59M', cycles: '30.89M', memory: '412.4KiB')]
+    #[Expected(instructions: '10.27M', cycles: '11.96M', memory: '442.7KiB')]
     public function benchPageViewPerRequestWithCache(): void
     {
         $this->meter->exclude(PhpFpm::startRequest(...));

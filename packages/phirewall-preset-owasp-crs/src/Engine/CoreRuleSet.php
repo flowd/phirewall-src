@@ -6,6 +6,7 @@ namespace Flowd\PhirewallPresetOwaspCrs\Engine;
 
 use Flowd\PhirewallPresetOwaspCrs\Engine\Exclusion\CtlExclusion;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Exclusion\ExclusionRule;
+use Flowd\PhirewallPresetOwaspCrs\Engine\Exclusion\ParsedRuleExclusions;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Exclusion\RuleExclusionParser;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Exclusion\RuntimeExclusions;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Variable\CallableRequestValueManipulator;
@@ -173,12 +174,20 @@ final class CoreRuleSet
      */
     public function applyRuleExclusions(string $rulesText, ?string $contextFolder = null): self
     {
-        $parsed = (new RuleExclusionParser())->parse($rulesText, $contextFolder);
-        foreach ($parsed->directives as $directive) {
+        return $this->applyParsedRuleExclusions((new RuleExclusionParser())->parse($rulesText, $contextFolder));
+    }
+
+    /**
+     * Apply CRS rule-exclusion syntax that was already parsed; see
+     * {@see applyRuleExclusions()}.
+     */
+    public function applyParsedRuleExclusions(ParsedRuleExclusions $parsedRuleExclusions): self
+    {
+        foreach ($parsedRuleExclusions->directives as $directive) {
             $this->applyExclusionDirective($directive);
         }
 
-        foreach ($parsed->exclusionRules as $exclusionRule) {
+        foreach ($parsedRuleExclusions->exclusionRules as $exclusionRule) {
             $this->exclusionRules[] = $exclusionRule;
         }
 
@@ -375,6 +384,15 @@ final class CoreRuleSet
 
         if ($ctlExclusion->tag !== null) {
             $this->ruleTargetConfig->excludeTargetByTag($ctlExclusion->tag, new TargetExclusion($selector));
+
+            return;
+        }
+
+        // The usual directive names one rule: look it up instead of asking every rule.
+        if ($ctlExclusion->idFrom !== null && $ctlExclusion->idFrom === $ctlExclusion->idTo) {
+            if (isset($this->rulesById[$ctlExclusion->idFrom])) {
+                $this->ruleTargetConfig->excludeTargetById($ctlExclusion->idFrom, new TargetExclusion($selector));
+            }
 
             return;
         }
