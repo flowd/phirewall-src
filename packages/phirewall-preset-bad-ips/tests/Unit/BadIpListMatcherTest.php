@@ -160,6 +160,45 @@ final class BadIpListMatcherTest extends TestCase
         $this->assertFalse($second->match($this->requestFrom('192.0.2.1'))->isMatch());
     }
 
+    public function testAnArtifactOfADataFileOfAnotherSizeIsReplaced(): void
+    {
+        $root = vfsStream::setup('resources');
+        $dataFile = vfsStream::newFile('bad-ips.data')->at($root)->setContent("192.0.2.1\n");
+        $dataFile->lastModified(1_000_000);
+
+        $cacheDirectory = vfsStream::newDirectory('cache')->at($root);
+        $compiledDataCache = new CompiledDataCache($cacheDirectory->url());
+
+        $first = BadIpListMatcher::fromDataFile($dataFile->url());
+        $first->useCompiledDataCache($compiledDataCache);
+        $this->assertTrue($first->match($this->requestFrom('192.0.2.1'))->isMatch());
+
+        // Another file with the same modification time, in a fresh process ...
+        $dataFile->setContent("203.0.113.7\n198.51.100.9\n");
+        $dataFile->lastModified(1_000_000);
+        clearstatcache();
+        CompiledDataCache::clearProcessCache();
+
+        $second = BadIpListMatcher::fromDataFile($dataFile->url());
+        $second->useCompiledDataCache($compiledDataCache);
+        $this->assertTrue($second->match($this->requestFrom('203.0.113.7'))->isMatch());
+
+        // ... leaves an artifact that serves the next process on its own: the
+        // source is now nothing but a comment of the same size and time.
+        $dataFile->setContent('#' . str_repeat('.', 23) . "\n");
+        $dataFile->lastModified(1_000_000);
+        clearstatcache();
+        CompiledDataCache::clearProcessCache();
+
+        $third = BadIpListMatcher::fromDataFile($dataFile->url());
+        $third->useCompiledDataCache($compiledDataCache);
+
+        $this->assertTrue($third->match($this->requestFrom('203.0.113.7'))->isMatch());
+        $this->assertTrue($third->match($this->requestFrom('198.51.100.9'))->isMatch());
+        $this->assertFalse($third->match($this->requestFrom('192.0.2.1'))->isMatch());
+        $this->assertCount(1, $cacheDirectory->getChildren(), 'The artifact is replaced, not added to.');
+    }
+
     /**
      * @param array<mixed> $artifact
      */

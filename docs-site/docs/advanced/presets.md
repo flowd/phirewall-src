@@ -118,7 +118,7 @@ $ruleData = $cache->load(
 // $ruleData is the plain array your preset builds its matchers from.
 ```
 
-The first level memoizes per process, so a warm PHP-FPM worker pays no parsing cost after its first request. The second level persists a compiled PHP artifact in the given directory and loads it via `include`, so OPcache serves it from shared memory even for cold workers. Editing a source file rebuilds on the next request; long-running workers (FrankenPHP, RoadRunner, Swoole) can additionally drop the in-process level with `CompiledDataCache::clearProcessCache()` when a deployment does not change the source mtimes.
+The first level memoizes per process, so a warm PHP-FPM worker pays no parsing cost after its first request. The second level persists a compiled PHP artifact in the given directory and loads it via `include`, so OPcache serves it from shared memory even for cold workers. Editing a source file rebuilds on the next request; long-running workers (FrankenPHP, RoadRunner, Swoole) can additionally drop the in-process level with `CompiledDataCache::clearProcessCache()` when a deployment does not change the source mtimes. A matcher that can tell on its own that its data is out of date, for example by a size it stored with it, calls `forget($identifier)` and loads again.
 
 The cache stores only plain arrays: cache the parsed data your objects are built from, not the objects themselves, and rebuild the objects from the returned array on each load. A builder returning anything but scalars, `null`, or nested arrays makes `load()` throw an `InvalidArgumentException` - unlike the silently degrading cache failures (an unwritable directory, a corrupt artifact), this surfaces a programming error instead of reviving objects through `__set_state()`.
 

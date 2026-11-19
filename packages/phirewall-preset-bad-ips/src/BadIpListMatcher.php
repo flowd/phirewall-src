@@ -92,27 +92,38 @@ final class BadIpListMatcher implements RequestMatcherInterface, ClientIpResolve
             return IpLookupTable::fromEntries(BadIpList::load($dataFile));
         }
 
-        try {
-            $compiled = $this->compiledDataCache->load(
-                // The whole hash of the path: two snapshots must never share an artifact.
-                'bad-ips-v' . self::COMPILED_SCHEMA_VERSION . '-' . hash('sha256', $dataFile),
-                [$dataFile],
-                static function () use ($dataFile): array {
-                    $content = BadIpList::read($dataFile);
+        // The whole hash of the path: two snapshots must never share an artifact.
+        $identifier = 'bad-ips-v' . self::COMPILED_SCHEMA_VERSION . '-' . hash('sha256', $dataFile);
+        $builder = static function () use ($dataFile): array {
+            $content = BadIpList::read($dataFile);
 
-                    return ['size' => strlen($content)] + IpLookupTable::fromEntries(BadIpList::parse($content))->toArray();
-                },
-            );
-        } catch (\Throwable) {
-            // A cache that cannot be used must not leave the snapshot unused.
-            $compiled = [];
-        }
+            return ['size' => strlen($content)] + IpLookupTable::fromEntries(BadIpList::parse($content))->toArray();
+        };
 
         // An artifact of an unexpected shape, or one made from a file of another
         // size, would match nothing or the wrong addresses, which for a blocklist
-        // means letting someone through: read the snapshot instead.
-        $ipLookupTable = ($compiled['size'] ?? null) === $size ? IpLookupTable::fromArray($compiled) : null;
+        // means letting someone through. The cache would keep it as long as the
+        // snapshot keeps its modification time, so it is made anew once; if that
+        // does not help either, the snapshot is read without the cache.
+        $ipLookupTable = null;
+        try {
+            $ipLookupTable = $this->tableOf($this->compiledDataCache->load($identifier, [$dataFile], $builder), $size);
+            if (!$ipLookupTable instanceof IpLookupTable) {
+                $this->compiledDataCache->forget($identifier);
+                $ipLookupTable = $this->tableOf($this->compiledDataCache->load($identifier, [$dataFile], $builder), $size);
+            }
+        } catch (\Throwable) {
+            // A cache that cannot be used must not leave the snapshot unused.
+        }
 
         return $ipLookupTable ?? IpLookupTable::fromEntries(BadIpList::load($dataFile));
+    }
+
+    /**
+     * @param array<mixed> $compiled
+     */
+    private function tableOf(array $compiled, int $size): ?IpLookupTable
+    {
+        return ($compiled['size'] ?? null) === $size ? IpLookupTable::fromArray($compiled) : null;
     }
 }

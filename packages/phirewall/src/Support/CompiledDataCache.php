@@ -70,6 +70,28 @@ final class CompiledDataCache
     }
 
     /**
+     * Drop what is kept for one identifier, in this process and in the
+     * directory, so that the next {@see load()} builds it again.
+     *
+     * For a caller that finds its data out of date although no source file
+     * has a newer mtime, like a file replaced by one of the same time.
+     */
+    public function forget(string $identifier): void
+    {
+        unset(self::$processCache[$this->directory][$identifier]);
+
+        $compiledFile = $this->compiledFilePath($identifier);
+        if (!is_file($compiledFile)) {
+            return;
+        }
+
+        @unlink($compiledFile);
+        if (function_exists('opcache_invalidate')) {
+            @opcache_invalidate($compiledFile, true);
+        }
+    }
+
+    /**
      * Drop the per-process memoization (long-running workers after a
      * deployment, test isolation).
      */
