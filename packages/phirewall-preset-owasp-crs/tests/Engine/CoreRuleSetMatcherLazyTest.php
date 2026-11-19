@@ -266,6 +266,32 @@ final class CoreRuleSetMatcherLazyTest extends TestCase
         $this->assertCount(1, $cacheDirectory->getChildren(), 'The artifact is replaced, not added to.');
     }
 
+    public function testAChangedRuleFileIsNoticedByAProcessThatLookedAtItLast(): void
+    {
+        [$root, $ruleFile] = $this->rulesDirectory();
+        $rulesDir = $root->url() . '/rules';
+        $compiledDataCache = new CompiledDataCache(vfsStream::newDirectory('cache')->at($root)->url());
+
+        // A long-running worker that builds a new Config: the second matcher is
+        // served from the process, and the only rule file is the last file PHP
+        // asked about, so PHP remembers its time and size.
+        foreach ([1, 2] as $ignored) {
+            $matcher = CoreRuleSetMatcher::fromRuleFiles(ParanoiaLevel::Level1, $rulesDir);
+            $matcher->useCompiledDataCache($compiledDataCache);
+            $this->assertTrue($matcher->match(new ServerRequest('GET', '/admin'))->isMatch());
+        }
+
+        // No clearstatcache() here: the matcher must not rely on what PHP remembers.
+        $ruleFile->setContent("SecRule REQUEST_URI \"@rx ^/private\\b\" \"id:400001,phase:2,deny,msg:'Block private path'\"");
+        $ruleFile->lastModified(1_000_100);
+
+        $third = CoreRuleSetMatcher::fromRuleFiles(ParanoiaLevel::Level1, $rulesDir);
+        $third->useCompiledDataCache($compiledDataCache);
+
+        $this->assertTrue($third->match(new ServerRequest('GET', '/private'))->isMatch());
+        $this->assertFalse($third->match(new ServerRequest('GET', '/admin'))->isMatch());
+    }
+
     public function testEagerConstructionIgnoresTheCompiledDataCache(): void
     {
         [$root] = $this->rulesDirectory();
