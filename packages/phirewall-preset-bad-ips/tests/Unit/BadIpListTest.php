@@ -28,6 +28,38 @@ final class BadIpListTest extends TestCase
         $this->assertSame([], BadIpList::load($root->url() . '/bad-ips.data'));
     }
 
+    public function testAnUnreadableFileIsReportedAsTheSameException(): void
+    {
+        $root = vfsStream::setup('resources');
+        vfsStream::newFile('bad-ips.data', 0)->at($root)->setContent("192.0.2.1\n");
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('cannot be read');
+
+        @BadIpList::load($root->url() . '/bad-ips.data');
+    }
+
+    public function testAnUnreadableFileIsTheSameExceptionUnderAStrictErrorHandler(): void
+    {
+        $root = vfsStream::setup('resources');
+        vfsStream::newFile('bad-ips.data', 0)->at($root)->setContent("192.0.2.1\n");
+
+        // Also called for warnings silenced with `@`, as every error handler is.
+        set_error_handler(static function (int $severity, string $message): never {
+            throw new \ErrorException($message, 0, $severity);
+        });
+        try {
+            BadIpList::load($root->url() . '/bad-ips.data');
+            $this->fail('An unreadable data file must be reported.');
+        } catch (\RuntimeException $runtimeException) {
+            $this->assertStringContainsString('cannot be read', $runtimeException->getMessage());
+            // What the handler threw says why, so it must not get lost.
+            $this->assertInstanceOf(\ErrorException::class, $runtimeException->getPrevious());
+        } finally {
+            restore_error_handler();
+        }
+    }
+
     public function testMissingFileThrows(): void
     {
         $root = vfsStream::setup('resources');
@@ -36,5 +68,34 @@ final class BadIpListTest extends TestCase
         $this->expectExceptionMessage('not found');
 
         BadIpList::load($root->url() . '/missing.data');
+    }
+
+    public function testAMissingFileRaisesNoWarning(): void
+    {
+        $root = vfsStream::setup('resources');
+
+        set_error_handler(static function (int $severity, string $message): never {
+            throw new \ErrorException($message, 0, $severity);
+        });
+        try {
+            BadIpList::load($root->url() . '/missing.data');
+            $this->fail('A missing data file must be reported.');
+        } catch (\RuntimeException $runtimeException) {
+            $this->assertStringContainsString('not found', $runtimeException->getMessage());
+        } finally {
+            restore_error_handler();
+        }
+    }
+
+    public function testParsesContentLikeAFile(): void
+    {
+        $content = "# header\r\n 192.0.2.1 \r\n\r\n#203.0.113.1\n203.0.113.7\n198.51.100.0/24";
+
+        $this->assertSame(['192.0.2.1', '203.0.113.7', '198.51.100.0/24'], BadIpList::parse($content));
+        $this->assertSame([], BadIpList::parse(''));
+
+        $root = vfsStream::setup('resources', null, ['bad-ips.data' => $content]);
+        $this->assertSame(BadIpList::parse($content), BadIpList::load($root->url() . '/bad-ips.data'));
+        $this->assertSame($content, BadIpList::read($root->url() . '/bad-ips.data'));
     }
 }

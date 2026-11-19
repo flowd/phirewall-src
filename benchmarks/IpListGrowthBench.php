@@ -12,8 +12,8 @@ use Flowd\PhirewallBenchmarks\Support\Outcome;
 use Flowd\PhirewallBenchmarks\Support\Requests;
 use Psr\Http\Message\ServerRequestInterface;
 use Tally\Attribute\Before;
+use Tally\Attribute\Constant;
 use Tally\Attribute\DataProvider;
-use Tally\Attribute\Linear;
 use Tally\Attribute\Warmup;
 
 /**
@@ -59,7 +59,7 @@ final class IpListGrowthBench
      * @param list<string> $networks
      */
     #[DataProvider('lists')]
-    #[Linear('networks')]
+    #[Constant('networks')]
     public function benchUnlistedClientInAWorker(array $networks): void
     {
         $this->firewall->decide($this->serverRequest);

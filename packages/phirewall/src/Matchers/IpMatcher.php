@@ -6,8 +6,8 @@ namespace Flowd\Phirewall\Matchers;
 
 use Flowd\Phirewall\Config\MatchResult;
 use Flowd\Phirewall\Config\RequestMatcherInterface;
-use Flowd\Phirewall\Matchers\Support\CidrMatcher;
 use Flowd\Phirewall\Support\CompiledDataCache;
+use Flowd\Phirewall\Support\IpLookupTable;
 use Psr\Http\Message\ServerRequestInterface;
 
 /**
@@ -20,31 +20,32 @@ use Psr\Http\Message\ServerRequestInterface;
  * the evaluating Config's resolver at match time ({@see ClientIpResolverAware});
  * standalone use falls back to the raw REMOTE_ADDR peer address.
  *
- * The entries are compiled into binary lookup tables on the first match, not
- * at construction. With a compiled-data cache on the evaluating Config
- * ({@see CompiledDataCacheAware}) the tables load from a compiled artifact
- * keyed by the content hash of the entry list, so large lists (threat feeds)
- * skip the per-request compilation entirely. Unparseable entries are skipped,
- * as before; only non-string entries throw, still at construction.
+ * The entries are compiled into an {@see IpLookupTable} on the first match,
+ * not at construction: a match then costs one lookup for the address and one
+ * per prefix length in use, however many networks the list has. With a
+ * compiled-data cache on the evaluating Config ({@see CompiledDataCacheAware})
+ * the table loads from a compiled artifact keyed by the content hash of the
+ * entry list, so large lists skip the per-request compilation. What remains
+ * per request is reading the entries once to check and hash them; a list
+ * that lives in a file is cheaper through a matcher that watches the file,
+ * like the bad-IP preset's. Unparseable entries are skipped, as before; only
+ * non-string entries throw, still at construction.
  */
 final class IpMatcher implements RequestMatcherInterface, ClientIpResolverAware, CompiledDataCacheAware
 {
     /**
-     * Format version of the compiled lookup tables. The compiled-cache
+     * Format version of the compiled lookup table. The compiled-cache
      * identifier is keyed on the entry content alone (no source files), so
-     * bump this whenever {@see compileTables()} or {@see CidrMatcher} changes
-     * the table shape, to force existing artifacts to rebuild after an upgrade.
+     * bump this whenever the array form of {@see IpLookupTable} or the way
+     * it is built changes, to force existing artifacts to rebuild after an
+     * upgrade.
      */
-    private const COMPILED_SCHEMA_VERSION = 1;
+    private const COMPILED_SCHEMA_VERSION = 2;
 
     /** @var list<string>|null Entries awaiting compilation; null once compiled. */
     private ?array $pendingEntries;
 
-    /** @var list<array{network: string, bits: int}> */
-    private array $compiled = [];
-
-    /** @var array<string, bool> */
-    private array $exactIps = [];
+    private ?IpLookupTable $ipLookupTable = null;
 
     private ?CompiledDataCache $compiledDataCache = null;
 
@@ -82,7 +83,7 @@ final class IpMatcher implements RequestMatcherInterface, ClientIpResolverAware,
 
     public function matchWithResolver(ServerRequestInterface $serverRequest, callable $defaultResolver): MatchResult
     {
-        $this->ensureCompiled();
+        $ipLookupTable = $this->ipLookupTable ??= $this->compile();
 
         $resolver = $this->ipResolver ?? $defaultResolver;
         $ip = $resolver($serverRequest);
@@ -90,96 +91,44 @@ final class IpMatcher implements RequestMatcherInterface, ClientIpResolverAware,
             return MatchResult::noMatch();
         }
 
-        $ipBinary = @inet_pton($ip);
-        if ($ipBinary === false) {
-            return MatchResult::noMatch();
-        }
-
-        // Dual-stack hosts often present IPv4 clients via the IPv4-mapped IPv6
-        // form (`::ffff:x.x.x.x`). Collapse to the embedded 4-byte IPv4 binary
-        // before lookup so rules written in IPv4 notation match either
-        // presentation.
-        $ipBinary = CidrMatcher::canonicalizeBinary($ipBinary);
-
-        if (isset($this->exactIps[$ipBinary])) {
-            return MatchResult::matched('ip_match', ['ip' => $ip]);
-        }
-
-        foreach ($this->compiled as $cidr) {
-            if (CidrMatcher::matches($ipBinary, $cidr)) {
-                return MatchResult::matched('ip_match', ['ip' => $ip]);
-            }
-        }
-
-        return MatchResult::noMatch();
+        // The table compares IPv4-mapped IPv6 (`::ffff:x.x.x.x`) as IPv4, so a
+        // rule written in either notation matches a dual-stack peer presented
+        // in either form.
+        return $ipLookupTable->contains($ip)
+            ? MatchResult::matched('ip_match', ['ip' => $ip])
+            : MatchResult::noMatch();
     }
 
     /**
-     * Compile the pending entries into the lookup tables on first use, served
+     * Compile the pending entries into the lookup table on first use, served
      * from the compiled-data cache when one was injected.
      */
-    private function ensureCompiled(): void
+    private function compile(): IpLookupTable
     {
-        if ($this->pendingEntries === null) {
-            return;
-        }
-
-        $entries = $this->pendingEntries;
-        $this->pendingEntries = null;
+        $entries = $this->pendingEntries ?? [];
 
         if ($this->compiledDataCache instanceof CompiledDataCache) {
             // Content-addressed identifier: a changed list gets a fresh
             // artifact, so no source files need watching.
             $identifier = 'ip-matcher-v' . self::COMPILED_SCHEMA_VERSION . '-' . sha1(implode("\n", $entries));
-            $tables = $this->compiledDataCache->load($identifier, [], static fn(): array => self::compileTables($entries));
+            $compiled = $this->compiledDataCache->load(
+                $identifier,
+                [],
+                static fn(): array => IpLookupTable::fromEntries($entries)->toArray(),
+            );
+
+            // A stale, corrupt, or otherwise unexpected artifact shape must not
+            // leave the table empty, silently matching nothing (fail-open for a
+            // blocklist). Recompile from the entries we still hold instead.
+            $ipLookupTable = IpLookupTable::fromArray($compiled) ?? IpLookupTable::fromEntries($entries);
         } else {
-            $tables = self::compileTables($entries);
+            $ipLookupTable = IpLookupTable::fromEntries($entries);
         }
 
-        $cidrs = $tables['cidrs'] ?? null;
-        $exact = $tables['exact'] ?? null;
-        if (!is_array($cidrs) || !is_array($exact)) {
-            // A stale, corrupt, or otherwise unexpected artifact shape would
-            // leave the tables empty, silently matching nothing (fail-open for
-            // a blocklist). Recompile from the entries we still hold instead.
-            $tables = self::compileTables($entries);
-            $cidrs = $tables['cidrs'];
-            $exact = $tables['exact'];
-        }
+        // Only now: were the entries let go before the table exists, a failure
+        // on the way would leave a list that matches nothing.
+        $this->pendingEntries = null;
 
-        /** @var list<array{network: string, bits: int}> $cidrs */
-        /** @var array<string, bool> $exact */
-        $this->compiled = $cidrs;
-        $this->exactIps = $exact;
-    }
-
-    /**
-     * @param list<string> $entries
-     * @return array{cidrs: list<array{network: string, bits: int}>, exact: array<string, bool>}
-     */
-    private static function compileTables(array $entries): array
-    {
-        $cidrs = [];
-        $exact = [];
-        foreach ($entries as $entry) {
-            if (str_contains($entry, '/')) {
-                $compiled = CidrMatcher::compile($entry);
-                if ($compiled !== null) {
-                    $cidrs[] = $compiled;
-                }
-
-                continue;
-            }
-
-            $binary = @inet_pton($entry);
-            if ($binary !== false) {
-                // Canonicalize the stored key the same way lookups are
-                // canonicalized, so a rule written in IPv4-mapped IPv6 form
-                // (`::ffff:x.x.x.x`) still matches a plain-IPv4 peer.
-                $exact[CidrMatcher::canonicalizeBinary($binary)] = true;
-            }
-        }
-
-        return ['cidrs' => $cidrs, 'exact' => $exact];
+        return $ipLookupTable;
     }
 }

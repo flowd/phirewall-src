@@ -21,7 +21,7 @@ use Flowd\Phirewall\ConfigLayer;
  * The blocked addresses come from the bundled `resources/bad-ips.data` snapshot
  * (see `bin/badip-import`) and load lazily on the first evaluated request; with
  * a compiled-data cache on the Config ({@see Config::setCompiledDataCache()})
- * the parsed list and its binary lookup tables come from compiled artifacts.
+ * the lookup table of the list comes ready from one compiled artifact.
  * The rule resolves the client IP through the Config's resolver; behind a
  * proxy or CDN configure a trusted client-IP resolver so it sees the real
  * client rather than the proxy. The raw address list stays available through

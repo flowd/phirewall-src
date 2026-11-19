@@ -87,6 +87,38 @@ final class CompiledDataCacheTest extends TestCase
         $this->assertSame(['ips' => ['203.0.113.9']], $data);
     }
 
+    public function testAForgottenIdentifierIsBuiltAgain(): void
+    {
+        $root = vfsStream::setup('cache');
+        $cache = new CompiledDataCache($root->url());
+        [$builder, $counter] = $this->countingBuilder();
+        $cache->load('bad-ips', [], $builder);
+        $cache->load('crs-rules', [], $builder);
+        $this->assertCount(2, $this->compiledFiles($root->url()));
+
+        $cache->forget('bad-ips');
+
+        $this->assertCount(1, $this->compiledFiles($root->url()), 'Only the artifact of the identifier is removed.');
+        $this->assertSame(['value' => 1], $cache->load('bad-ips', [], static fn(): array => ['value' => 1]));
+        $this->assertSame(['value' => 42], $cache->load('crs-rules', [], $builder));
+        $this->assertSame(2, $counter->count, 'The other identifier is still served from the cache.');
+
+        // A fresh process finds the artifact that was built after forgetting.
+        CompiledDataCache::clearProcessCache();
+        $this->assertSame(['value' => 1], $cache->load('bad-ips', [], static function (): array {
+            throw new \LogicException('The builder must not run on a compiled-file hit.');
+        }));
+    }
+
+    public function testForgettingWhatWasNeverBuiltDoesNothing(): void
+    {
+        $root = vfsStream::setup('cache');
+
+        (new CompiledDataCache($root->url() . '/missing'))->forget('bad-ips');
+
+        $this->assertFalse($root->hasChild('missing'));
+    }
+
     public function testRebuildsWhenASourceFileChanges(): void
     {
         $root = vfsStream::setup('cache');

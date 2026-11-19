@@ -102,6 +102,33 @@ Rule-of-thumb: counting rules are free at any realistic load; give CRS a
 thought once you serve hundreds of uncached requests per second, and scope it
 to the routes that need it if you do.
 
+## IP list cost
+
+Whether a client address is on a list is looked up in a table: one lookup for
+the address and one per prefix length the list uses, so ten entries cost the
+same as ten thousand. What a long list costs under PHP-FPM is getting the
+table into the request, and that depends on where the list comes from:
+
+| Added to a firewall | PHP-FPM, with compiled data cache | PHP-FPM, without | Long-running worker |
+|---------------------|----------------------------------:|-----------------:|--------------------:|
+| `blocklists->ip()` with 5 entries | 0.03 ms | 0.02 ms | 0.5 us |
+| `blocklists->ip()` with 2,200 networks | 0.1 ms | 0.6 ms | 0.7 us |
+| `blocklists->ip()` with 18,640 addresses | 0.4 ms | 1.4 ms | 0.3 us |
+| [Bad-IP preset](/features/bad-ip-preset) (18,640 addresses) | 0.05 ms | 2.1 ms | 0.3 us |
+
+Measured as the difference to a firewall without rules, on PHP 8.5 with
+OPcache in a Linux container on an ARM machine, code on local disk. The
+PHP-FPM columns are the whole firewall for one request, from loading its
+classes to the decision (median of 400 requests, each starting without any
+state of the previous one); the worker column is one `decide()` call on a
+firewall that is already built.
+
+A list passed as an array is read once per request, to check its entries and
+to find its table in the [compiled data cache](/advanced/presets#caching-expensive-preset-data);
+that is the 0.4 ms for 18,640 addresses. A list that lives in a file, like
+the snapshot of the bad-IP preset, is recognised by the file's modification
+time and size instead, and its table comes out of the cache ready to use.
+
 ## Inside a real application
 
 Measured end to end on a TYPO3 site (Docker, Apache + mod_php 8.4, cached
