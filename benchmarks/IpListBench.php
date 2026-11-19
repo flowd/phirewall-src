@@ -51,14 +51,14 @@ final class IpListBench
         Outcome::mustPass((new Firewall($this->config($this->compiledDataCache())))->decide($this->serverRequest));
     }
 
-    #[Expected(instructions: '2.016M', cycles: '2.072M', memory: '1.008KiB')]
+    #[Expected(instructions: '29.13K', cycles: '41.24K', memory: '1.047KiB')]
     public function benchUnlistedClientInAWorker(): void
     {
         $this->firewall->decide($this->serverRequest);
     }
 
     /** The list is parsed on every request. */
-    #[Expected(instructions: '6.364M', cycles: '6.666M', memory: '422.2KiB')]
+    #[Expected(instructions: '6.025M', cycles: '7.221M', memory: '84.36KiB')]
     public function benchPerRequestWithoutCache(): void
     {
         $this->meter->exclude(PhpFpm::startRequest(...));
@@ -67,7 +67,7 @@ final class IpListBench
     }
 
     /** The parsed list comes from the compiled-data cache. */
-    #[Expected(instructions: '2.588M', cycles: '2.702M', memory: '19.59KiB')]
+    #[Expected(instructions: '641.3K', cycles: '718.7K', memory: '19.58KiB')]
     public function benchPerRequestWithCache(): void
     {
         $this->meter->exclude(PhpFpm::startRequest(...));
