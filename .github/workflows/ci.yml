@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    # main and the maintenance branches (X.Y, e.g. 0.11)
+    branches: [ main, '[0-9]+.[0-9]+' ]
   pull_request:
 
 permissions:
