@@ -544,24 +544,27 @@ final class CoreRuleSetMatcher implements RequestMatcherInterface, CompiledDataC
         // along with the rules that read them, so they are sources as well.
         $dataFiles = RuleSetLoader::dataFiles($rulesDirectory);
         $sourceFiles = [...$ruleFiles, ...$dataFiles];
-        // The artifact is named after the state of every source file: its
-        // path, modification time and size. A phrase file is no longer read
-        // per request, so a change to one must not go unnoticed just because
-        // another file is newer; the newest modification time alone, which is
-        // all the cache compares by itself, would miss that.
+        // One artifact per rules directory and paranoia level, so that a newer
+        // one takes the place of the older and none is left behind.
         $identifier = sprintf(
             'owasp-crs-v%d-pl%d-%s',
             self::COMPILED_SCHEMA_VERSION,
             $this->paranoiaLevel->value,
-            RuleSetLoader::fingerprint($sourceFiles),
+            sha1($rulesDirectory),
         );
+        // The artifact says which state of the source files it was made from:
+        // the path, modification time and size of each. A phrase file is no
+        // longer read per request, so a change to one must not go unnoticed
+        // just because another file is newer; the newest modification time
+        // alone, which is all the cache compares by itself, would miss that.
+        $sources = RuleSetLoader::fingerprint($sourceFiles);
 
         $paranoiaLevel = $this->paranoiaLevel;
         // Parse with the same parameters as the non-cached path, so an invalid
         // cap fails here (before an artifact is written) instead of only at
         // hydration.
         $maxValuesPerCrsVariable = $this->maxValuesPerCrsVariable;
-        $ruleData = $this->compiledDataCache->load($identifier, [], static function () use ($paranoiaLevel, $rulesDirectory, $maxValuesPerCrsVariable, $dataFiles): array {
+        $builder = static function () use ($paranoiaLevel, $rulesDirectory, $maxValuesPerCrsVariable, $dataFiles, $sources): array {
             $parsed = RuleSetLoader::load($paranoiaLevel, $rulesDirectory, $maxValuesPerCrsVariable);
             $rules = [];
             foreach ($parsed->ids() as $id) {
@@ -577,16 +580,40 @@ final class CoreRuleSetMatcher implements RequestMatcherInterface, CompiledDataC
                 }
             }
 
-            return $rules;
-        });
+            return ['sources' => $sources, 'rules' => $rules];
+        };
 
-        $coreRuleSet = $this->hydrate($ruleData);
+        $coreRuleSet = $this->ruleSetOf($this->compiledDataCache->load($identifier, [], $builder), $sources, $ruleFiles);
+        if (!$coreRuleSet instanceof CoreRuleSet) {
+            // Made from another state of the source files, or not usable: the
+            // cache would keep it for good, so it is made anew once.
+            $this->compiledDataCache->forget($identifier);
+            $coreRuleSet = $this->ruleSetOf($this->compiledDataCache->load($identifier, [], $builder), $sources, $ruleFiles);
+        }
+
+        // If that did not help either, the rules are read without the cache.
+        return $coreRuleSet ?? RuleSetLoader::load($this->paranoiaLevel, $rulesDirectory, $this->maxValuesPerCrsVariable);
+    }
+
+    /**
+     * The rules of an artifact, or null when it was made from another state
+     * of the source files, is not a list of well-formed rule arrays, or holds
+     * no rules although there are rule files (a truncated artifact). Each of
+     * these would let requests through that the rules block.
+     *
+     * @param array<mixed> $artifact
+     * @param list<string> $ruleFiles
+     */
+    private function ruleSetOf(array $artifact, string $sources, array $ruleFiles): ?CoreRuleSet
+    {
+        $rules = $artifact['rules'] ?? null;
+        if (($artifact['sources'] ?? null) !== $sources || !is_array($rules)) {
+            return null;
+        }
+
+        $coreRuleSet = $this->hydrate($rules);
         if (!$coreRuleSet instanceof CoreRuleSet || ($ruleFiles !== [] && $coreRuleSet->ids() === [])) {
-            // The artifact is not a list of well-formed rule arrays, or it
-            // hydrated to zero rules despite the source having rule files (a
-            // truncated/corrupt artifact) - both fail-open for a blocklist.
-            // Reparse the source instead.
-            return RuleSetLoader::load($this->paranoiaLevel, $rulesDirectory, $this->maxValuesPerCrsVariable);
+            return null;
         }
 
         return $coreRuleSet;

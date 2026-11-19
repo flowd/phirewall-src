@@ -78,17 +78,21 @@ final class CoreRuleSetMatcherCompiledPhrasesTest extends TestCase
     }
 
     /**
-     * The name under which the matcher keeps its compiled rules, and the files they are compiled from.
-     * The name stands for one state of those files: their paths, times and sizes.
-     *
-     * @return array{0: string, 1: list<string>}
+     * The name under which the matcher keeps its compiled rules: one per rules directory and paranoia level.
      */
-    private function artifactIdentity(): array
+    private function artifactIdentifier(): string
+    {
+        return 'owasp-crs-v3-pl1-' . sha1(self::RULES_DIRECTORY);
+    }
+
+    /**
+     * The state of the source files that an artifact is made from: their paths, times and sizes.
+     */
+    private function sources(): string
     {
         clearstatcache();
-        $sourceFiles = [...RuleSetLoader::ruleFiles(ParanoiaLevel::Level1, self::RULES_DIRECTORY), ...RuleSetLoader::dataFiles(self::RULES_DIRECTORY)];
 
-        return ['owasp-crs-v3-pl1-' . RuleSetLoader::fingerprint($sourceFiles), $sourceFiles];
+        return RuleSetLoader::fingerprint([...RuleSetLoader::ruleFiles(ParanoiaLevel::Level1, self::RULES_DIRECTORY), ...RuleSetLoader::dataFiles(self::RULES_DIRECTORY)]);
     }
 
     /**
@@ -96,12 +100,19 @@ final class CoreRuleSetMatcherCompiledPhrasesTest extends TestCase
      */
     private function artifact(): array
     {
-        [$identifier] = $this->artifactIdentity();
         CompiledDataCache::clearProcessCache();
 
-        return (new CompiledDataCache(self::CACHE_DIRECTORY))->load($identifier, [], static function (): array {
+        return (new CompiledDataCache(self::CACHE_DIRECTORY))->load($this->artifactIdentifier(), [], static function (): array {
             self::fail('The artifact is expected to exist.');
         });
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function artifactFiles(): array
+    {
+        return array_values(array_filter(scandir(self::CACHE_DIRECTORY) ?: [], static fn(string $file): bool => is_file(self::CACHE_DIRECTORY . '/' . $file)));
     }
 
     public function testCachedAndUncachedMatchersAgree(): void
@@ -116,7 +127,11 @@ final class CoreRuleSetMatcherCompiledPhrasesTest extends TestCase
     public function testTheArtifactCarriesPhrasesAndPrefilterOfWatchedFilesAndInlineLists(): void
     {
         $this->matchedRule($this->matcher(), '/');
-        $phraseSets = array_column($this->artifact(), 'phraseSet', 'id');
+        $artifact = $this->artifact();
+        $this->assertSame($this->sources(), $artifact['sources'] ?? null);
+        $rules = $artifact['rules'] ?? null;
+        $this->assertIsArray($rules);
+        $phraseSets = array_column($rules, 'phraseSet', 'id');
 
         $this->assertSame(['phrases' => ['alpha', 'Beta'], 'prefilter' => '~(?:alpha|beta)~'], $phraseSets[410001] ?? null);
         $this->assertSame(['phrases' => ['inline-one', 'inline-two'], 'prefilter' => '~inline\-(?:one|two)~'], $phraseSets[410003] ?? null);
@@ -174,6 +189,27 @@ final class CoreRuleSetMatcherCompiledPhrasesTest extends TestCase
         $this->assertSame(410001, $this->matchedRule($this->matcher(), '/delta'));
     }
 
+    public function testChangedSourcesLeaveOneArtifact(): void
+    {
+        $this->matchedRule($this->matcher(), '/');
+        $this->assertCount(1, $this->artifactFiles());
+
+        // A newer phrase file, one of another size at the same time, a newer rule file, a file more, a file less.
+        $this->write($this->phraseFile, "delta\n", 2_000_000);
+        $this->matchedRule($this->matcher(), '/');
+        $this->write($this->phraseFile, "delta\nepsilon\n", 2_000_000);
+        $this->matchedRule($this->matcher(), '/');
+        $this->write(self::RULES_DIRECTORY . '/REQUEST-410-TEST.pl1.conf', sprintf(self::RULES, basename($this->phraseFile)) . "\n", 3_000_000);
+        $this->matchedRule($this->matcher(), '/');
+        $this->write(self::RULES_DIRECTORY . '/more.data', "zeta\n", 1_000_000);
+        $this->matchedRule($this->matcher(), '/');
+        unlink(self::RULES_DIRECTORY . '/more.data');
+
+        $this->assertSame(410001, $this->matchedRule($this->matcher(), '/epsilon'));
+        $this->assertCount(1, $this->artifactFiles(), 'A newer artifact takes the place of the older one.');
+        $this->assertSame($this->sources(), $this->artifact()['sources'] ?? null);
+    }
+
     public function testARemovedPhraseFileRebuildsTheArtifact(): void
     {
         $this->assertSame(410001, $this->matchedRule($this->matcher(), '/alpha'));
@@ -200,23 +236,20 @@ final class CoreRuleSetMatcherCompiledPhrasesTest extends TestCase
     {
         $this->matchedRule($this->matcher(), '/');
         $artifact = $this->artifact();
-        foreach ($artifact as $position => $rule) {
+        $rules = $artifact['rules'] ?? null;
+        $this->assertIsArray($rules);
+        foreach ($rules as $position => $rule) {
             if (is_array($rule) && ($rule['id'] ?? null) === 410001) {
                 // Half the phrases, and one that is not a string.
                 $rule['phraseSet'] = ['phrases' => ['alpha', 7], 'prefilter' => null];
-                $artifact[$position] = $rule;
+                $rules[$position] = $rule;
             }
         }
 
-        [$identifier] = $this->artifactIdentity();
-        foreach (scandir(self::CACHE_DIRECTORY) ?: [] as $file) {
-            if (is_file(self::CACHE_DIRECTORY . '/' . $file)) {
-                unlink(self::CACHE_DIRECTORY . '/' . $file);
-            }
-        }
-
-        CompiledDataCache::clearProcessCache();
-        (new CompiledDataCache(self::CACHE_DIRECTORY))->load($identifier, [], static fn(): array => $artifact);
+        $artifact['rules'] = $rules;
+        $compiledDataCache = new CompiledDataCache(self::CACHE_DIRECTORY);
+        $compiledDataCache->forget($this->artifactIdentifier());
+        $compiledDataCache->load($this->artifactIdentifier(), [], static fn(): array => $artifact);
 
         $this->assertSame(410001, $this->matchedRule($this->matcher(), '/beta'), 'The rule must come from the source, with all its phrases.');
     }
