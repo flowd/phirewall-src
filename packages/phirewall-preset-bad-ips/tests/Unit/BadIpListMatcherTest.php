@@ -132,6 +132,34 @@ final class BadIpListMatcherTest extends TestCase
         $this->assertCount(1, $cacheDirectory->getChildren(), 'The artifact of a data file is replaced, not added to.');
     }
 
+    public function testAChangedDataFileIsNoticedByAProcessThatLookedAtItLast(): void
+    {
+        $root = vfsStream::setup('resources');
+        $dataFile = vfsStream::newFile('bad-ips.data')->at($root)->setContent("192.0.2.1\n");
+        $dataFile->lastModified(1_000_000);
+
+        $compiledDataCache = new CompiledDataCache(vfsStream::newDirectory('cache')->at($root)->url());
+
+        // A long-running worker that builds a new Config: the second matcher is
+        // served from the process, and the data file is the last file PHP asked
+        // about, so PHP remembers its time and size.
+        foreach ([1, 2] as $ignored) {
+            $matcher = BadIpListMatcher::fromDataFile($dataFile->url());
+            $matcher->useCompiledDataCache($compiledDataCache);
+            $this->assertTrue($matcher->match($this->requestFrom('192.0.2.1'))->isMatch());
+        }
+
+        // No clearstatcache() here: the matcher must not rely on what PHP remembers.
+        $dataFile->setContent("203.0.113.7\n198.51.100.9\n");
+        $dataFile->lastModified(1_000_100);
+
+        $third = BadIpListMatcher::fromDataFile($dataFile->url());
+        $third->useCompiledDataCache($compiledDataCache);
+
+        $this->assertTrue($third->match($this->requestFrom('203.0.113.7'))->isMatch());
+        $this->assertFalse($third->match($this->requestFrom('192.0.2.1'))->isMatch());
+    }
+
     public function testAnArtifactIsNotUsedForADataFileOfAnotherSize(): void
     {
         $root = vfsStream::setup('resources');

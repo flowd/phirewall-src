@@ -87,6 +87,9 @@ final class BadIpListMatcher implements RequestMatcherInterface, ClientIpResolve
     private function load(): IpLookupTable
     {
         $dataFile = $this->dataFile ?? BadIpList::defaultDataFile();
+        // PHP remembers time and size of the file it was asked about last. In a
+        // long-running worker that can be this one, as it was before it changed.
+        clearstatcache();
         $size = is_file($dataFile) ? filesize($dataFile) : false;
         if (!$this->compiledDataCache instanceof CompiledDataCache || $size === false) {
             return IpLookupTable::fromEntries(BadIpList::load($dataFile));

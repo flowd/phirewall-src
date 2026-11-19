@@ -28,6 +28,36 @@ final class BadIpListTest extends TestCase
         $this->assertSame([], BadIpList::load($root->url() . '/bad-ips.data'));
     }
 
+    public function testAnUnreadableFileIsReportedAsTheSameException(): void
+    {
+        $root = vfsStream::setup('resources');
+        vfsStream::newFile('bad-ips.data', 0)->at($root)->setContent("192.0.2.1\n");
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('not found');
+
+        @BadIpList::load($root->url() . '/bad-ips.data');
+    }
+
+    public function testAnUnreadableFileIsTheSameExceptionUnderAStrictErrorHandler(): void
+    {
+        $root = vfsStream::setup('resources');
+        vfsStream::newFile('bad-ips.data', 0)->at($root)->setContent("192.0.2.1\n");
+
+        // Also called for warnings silenced with `@`, as every error handler is.
+        set_error_handler(static function (int $severity, string $message): never {
+            throw new \ErrorException($message, 0, $severity);
+        });
+        try {
+            BadIpList::load($root->url() . '/bad-ips.data');
+            $this->fail('An unreadable data file must be reported.');
+        } catch (\RuntimeException $runtimeException) {
+            $this->assertStringContainsString('not found', $runtimeException->getMessage());
+        } finally {
+            restore_error_handler();
+        }
+    }
+
     public function testMissingFileThrows(): void
     {
         $root = vfsStream::setup('resources');
