@@ -111,6 +111,9 @@ final class RuleSetLoader
      */
     public static function fingerprint(array $files): string
     {
+        // PHP remembers the file it was asked about last, in a worker across changes to it.
+        clearstatcache();
+
         $state = '';
         foreach ($files as $file) {
             // Asked in this order, the three answers come from one look at the file.

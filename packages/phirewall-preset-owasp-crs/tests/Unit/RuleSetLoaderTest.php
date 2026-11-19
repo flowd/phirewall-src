@@ -54,4 +54,22 @@ final class RuleSetLoaderTest extends TestCase
 
         RuleSetLoader::ruleFiles(ParanoiaLevel::Level1, $root->url() . '/missing');
     }
+
+    public function testTheFingerprintOfAFileAskedAboutLastSeesItsChange(): void
+    {
+        $root = $this->setUpRulesDirectory();
+        $ruleFile = $root->getChild('REQUEST-942-SQLI.pl1.conf');
+        $this->assertNotNull($ruleFile);
+        $ruleFile->lastModified(1_000_000);
+
+        $files = [$root->url() . '/REQUEST-942-SQLI.pl1.conf'];
+        $before = RuleSetLoader::fingerprint($files);
+
+        // No assertion before the second call: loading its class makes PHP forget the file.
+        $ruleFile->lastModified(1_000_100);
+        $after = RuleSetLoader::fingerprint($files);
+
+        $this->assertNotSame($before, $after);
+        $this->assertSame($after, RuleSetLoader::fingerprint($files));
+    }
 }
