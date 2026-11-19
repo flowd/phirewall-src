@@ -26,17 +26,26 @@ final class BadIpList
      */
     public static function read(string $dataFile): string
     {
+        $found = false;
+        $content = false;
+        $cause = null;
         try {
             // Asked first, so that a missing file is the exception below and not a warning.
-            $content = is_file($dataFile) ? @file_get_contents($dataFile) : false;
-        } catch (\Throwable) {
+            $found = is_file($dataFile);
+            $content = $found ? @file_get_contents($dataFile) : false;
+        } catch (\Throwable $throwable) {
             // A file that is there but cannot be read still raises a warning, and
             // an error handler may turn it into an exception although it is silenced.
-            $content = false;
+            // It is kept as the cause, for whoever logs the exception below.
+            $cause = $throwable;
         }
 
         if ($content === false) {
-            throw new \RuntimeException('Bad-IP data file not found: ' . $dataFile);
+            throw new \RuntimeException(
+                ($found ? 'Bad-IP data file cannot be read: ' : 'Bad-IP data file not found: ') . $dataFile,
+                0,
+                $cause,
+            );
         }
 
         return $content;

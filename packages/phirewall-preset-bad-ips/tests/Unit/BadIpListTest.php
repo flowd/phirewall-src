@@ -34,7 +34,7 @@ final class BadIpListTest extends TestCase
         vfsStream::newFile('bad-ips.data', 0)->at($root)->setContent("192.0.2.1\n");
 
         $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('not found');
+        $this->expectExceptionMessage('cannot be read');
 
         @BadIpList::load($root->url() . '/bad-ips.data');
     }
@@ -52,7 +52,9 @@ final class BadIpListTest extends TestCase
             BadIpList::load($root->url() . '/bad-ips.data');
             $this->fail('An unreadable data file must be reported.');
         } catch (\RuntimeException $runtimeException) {
-            $this->assertStringContainsString('not found', $runtimeException->getMessage());
+            $this->assertStringContainsString('cannot be read', $runtimeException->getMessage());
+            // What the handler threw says why, so it must not get lost.
+            $this->assertInstanceOf(\ErrorException::class, $runtimeException->getPrevious());
         } finally {
             restore_error_handler();
         }
