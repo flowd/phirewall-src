@@ -816,7 +816,7 @@ Build the matcher with the lazy factory and give the `Config` a compiled-data ca
 - the phrases of every `@pm` rule and of every `@pmFromFile` rule whose file is a `*.data` file of the rules directory,
 - for each of those phrase lists a prefilter, one expression that tells in a single pass whether a value contains any of the phrases at all. Only a value it does not rule out is searched phrase by phrase, so the prefilter never changes what a rule finds.
 
-The artifact is rebuilt, and takes the place of the previous one, when a rule file or one of those phrase files changes, is added or is removed, and after an update of the package that changes its format. What remains per request is turning the cached data into rule objects, well under a millisecond for paranoia level 1 (see [Performance](/advanced/performance#owasp-crs-cost)).
+The artifact is rebuilt, and takes the place of the previous one, when a rule file or one of those phrase files changes, is added or is removed, and after an update of the package that changes its format. A change is recognised by the modification time and size of a file: one replaced by a file of the same size and time is not noticed, so clear the cache directory on deployment if yours can produce that. What remains per request is turning the cached data into rule objects, well under a millisecond for paranoia level 1 (see [Performance](/advanced/performance#owasp-crs-cost)).
 
 ```php
 use Flowd\Phirewall\Config\Rule\BlocklistRule;
