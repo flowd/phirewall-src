@@ -17,12 +17,13 @@ use Flowd\Phirewall\Http\Firewall;
 use Flowd\Phirewall\Matchers\CompiledDataCacheAware;
 use Flowd\Phirewall\Store\InMemoryCache;
 use Flowd\Phirewall\Support\CompiledDataCache;
-use org\bovigo\vfs\vfsStream;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Message\ServerRequestInterface;
 
 final class CompiledDataCacheAwareTest extends TestCase
 {
+    use TemporaryFiles;
+
     protected function setUp(): void
     {
         CompiledDataCache::clearProcessCache();
@@ -53,7 +54,7 @@ final class CompiledDataCacheAwareTest extends TestCase
         $config = new Config(new InMemoryCache());
         $this->assertNull($config->compiledDataCache());
 
-        $compiledDataCache = new CompiledDataCache(vfsStream::setup('cache')->url());
+        $compiledDataCache = new CompiledDataCache($this->temporaryPath());
         $config->setCompiledDataCache($compiledDataCache);
 
         $this->assertSame($compiledDataCache, $config->compiledDataCache());
@@ -61,8 +62,8 @@ final class CompiledDataCacheAwareTest extends TestCase
 
     public function testCompositionInheritsTheCacheFromTheBaseLayer(): void
     {
-        $baseCache = new CompiledDataCache(vfsStream::setup('cache')->url() . '/base');
-        $overlayCache = new CompiledDataCache(vfsStream::setup('cache2')->url() . '/overlay');
+        $baseCache = new CompiledDataCache($this->temporaryPath('cache/base'));
+        $overlayCache = new CompiledDataCache($this->temporaryPath('cache2/overlay'));
 
         $base = (new Config(new InMemoryCache()))->setCompiledDataCache($baseCache);
         $overlay = (new Config(new InMemoryCache()))->setCompiledDataCache($overlayCache);
@@ -72,7 +73,7 @@ final class CompiledDataCacheAwareTest extends TestCase
 
     public function testFirewallInjectsTheCacheIntoAwareMatchersOfEverySection(): void
     {
-        $compiledDataCache = new CompiledDataCache(vfsStream::setup('cache')->url());
+        $compiledDataCache = new CompiledDataCache($this->temporaryPath());
         $config = (new Config(new InMemoryCache()))->setCompiledDataCache($compiledDataCache);
         $keyExtractor = new ClosureKeyExtractor(fn(ServerRequestInterface $serverRequest): string => '203.0.113.5');
 
@@ -112,21 +113,19 @@ final class CompiledDataCacheAwareTest extends TestCase
 
     public function testIpMatcherCompilesLazilyAndWritesAnArtifact(): void
     {
-        $root = vfsStream::setup('cache');
-        $compiledDataCache = new CompiledDataCache($root->url());
+        $compiledDataCache = new CompiledDataCache($this->temporaryPath());
 
         $ipMatcher = new \Flowd\Phirewall\Matchers\IpMatcher(['203.0.113.0/24', '198.51.100.7']);
         $ipMatcher->useCompiledDataCache($compiledDataCache);
 
         $request = new \Nyholm\Psr7\ServerRequest('GET', '/', [], null, '1.1', ['REMOTE_ADDR' => '203.0.113.99']);
         $this->assertTrue($ipMatcher->match($request)->isMatch());
-        $this->assertNotSame([], $root->getChildren(), 'The compiled tables must be persisted.');
+        $this->assertNotSame([], $this->entriesIn($this->temporaryPath()), 'The compiled tables must be persisted.');
     }
 
     public function testIpMatcherConsumesTheCompiledArtifact(): void
     {
-        $root = vfsStream::setup('cache');
-        $compiledDataCache = new CompiledDataCache($root->url());
+        $compiledDataCache = new CompiledDataCache($this->temporaryPath());
         $entries = ['203.0.113.0/24'];
 
         // Seed the content-addressed artifact with tables for a DIFFERENT
@@ -149,8 +148,7 @@ final class CompiledDataCacheAwareTest extends TestCase
 
     public function testIpMatcherRecompilesWhenTheArtifactShapeIsUnexpected(): void
     {
-        $root = vfsStream::setup('cache');
-        $compiledDataCache = new CompiledDataCache($root->url());
+        $compiledDataCache = new CompiledDataCache($this->temporaryPath());
         $entries = ['203.0.113.0/24'];
 
         // Seed a parseable but wrong-shape artifact (no exact/networks keys).
@@ -169,8 +167,7 @@ final class CompiledDataCacheAwareTest extends TestCase
 
     public function testIpMatcherIgnoresArtifactsOfTheLookupTablesBeforeTheirCurrentForm(): void
     {
-        $root = vfsStream::setup('cache');
-        $compiledDataCache = new CompiledDataCache($root->url());
+        $compiledDataCache = new CompiledDataCache($this->temporaryPath());
         $entries = ['203.0.113.0/24', '198.51.100.7'];
 
         // An artifact as an earlier version wrote it, with tables that match nothing.
@@ -182,13 +179,12 @@ final class CompiledDataCacheAwareTest extends TestCase
 
         $this->assertTrue($ipMatcher->match(new \Nyholm\Psr7\ServerRequest('GET', '/', [], null, '1.1', ['REMOTE_ADDR' => '203.0.113.99']))->isMatch());
         $this->assertTrue($ipMatcher->match(new \Nyholm\Psr7\ServerRequest('GET', '/', [], null, '1.1', ['REMOTE_ADDR' => '198.51.100.7']))->isMatch());
-        $this->assertCount(2, $root->getChildren(), 'The current form gets an artifact of its own.');
+        $this->assertCount(2, $this->entriesIn($this->temporaryPath()), 'The current form gets an artifact of its own.');
     }
 
     public function testIpMatcherServedFromItsArtifactDecidesLikeWithoutACache(): void
     {
-        $root = vfsStream::setup('cache');
-        $compiledDataCache = new CompiledDataCache($root->url());
+        $compiledDataCache = new CompiledDataCache($this->temporaryPath());
         $entries = ['203.0.113.0/24', '198.51.100.7', '::ffff:192.0.2.0/120', '2001:db8::/33', '10.32.0.0/11', '49.50.51.52', 'garbage'];
         $addresses = ['203.0.113.1', '203.0.114.1', '198.51.100.7', '198.51.100.8', '192.0.2.200', '::ffff:192.0.2.200', '2001:db8:7fff::1', '2001:db8:8000::1', '10.63.0.1', '10.64.0.1', '49.50.51.52', '49.50.51.53', 'garbage'];
 
@@ -214,6 +210,6 @@ final class CompiledDataCacheAwareTest extends TestCase
             $this->assertSame($expected, $decisions($ipMatcher), 'run ' . $run);
         }
 
-        $this->assertCount(1, $root->getChildren());
+        $this->assertCount(1, $this->entriesIn($this->temporaryPath()));
     }
 }

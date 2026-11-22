@@ -7,11 +7,13 @@ namespace Flowd\PhirewallPresetBadIps\Tests\Unit;
 use Flowd\PhirewallPresetBadIps\FeedSource;
 use Flowd\PhirewallPresetBadIps\Importer;
 use Flowd\PhirewallPresetBadIps\Manifest;
-use org\bovigo\vfs\vfsStream;
+use Flowd\PhirewallPresetBadIps\Tests\TemporaryFiles;
 use PHPUnit\Framework\TestCase;
 
 final class ImporterTest extends TestCase
 {
+    use TemporaryFiles;
+
     private function source(): FeedSource
     {
         return new FeedSource('stamparm/ipsum', 'https://github.com/stamparm/ipsum', '3', 'The Unlicense (public domain)');
@@ -19,8 +21,7 @@ final class ImporterTest extends TestCase
 
     public function testWritesDataFileAndManifest(): void
     {
-        vfsStream::setup('pkg');
-        $destination = vfsStream::url('pkg/resources');
+        $destination = $this->temporaryPath('resources');
 
         $importReport = (new Importer())->import("203.0.113.7\n192.0.2.1\n192.0.2.1\n", $this->source(), $destination, '2026-06-13T10:00:00+00:00');
 
@@ -39,11 +40,9 @@ final class ImporterTest extends TestCase
 
     public function testEmptyFeedThrows(): void
     {
-        vfsStream::setup('pkg');
-
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('no valid IPv4');
 
-        (new Importer())->import("# nothing\n", $this->source(), vfsStream::url('pkg/resources'), '2026-06-13T10:00:00+00:00');
+        (new Importer())->import("# nothing\n", $this->source(), $this->temporaryPath('resources'), '2026-06-13T10:00:00+00:00');
     }
 }

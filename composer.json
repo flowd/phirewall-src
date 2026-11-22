@@ -25,12 +25,12 @@
     "require-dev": {
         "friendsofphp/php-cs-fixer": "^3.89",
         "infection/infection": "^0.29",
-        "mikey179/vfsstream": "^1.6.11",
         "nyholm/psr7": "^1.8",
         "phpstan/phpstan": "^1.12",
         "phpstan/tally": "^1.0.1",
         "phpunit/phpunit": "^11.5",
         "rector/rector": "^1.2",
+        "spatie/temporary-directory": "^2.3",
         "symplify/monorepo-builder": "^12.7"
     },
     "authors": [

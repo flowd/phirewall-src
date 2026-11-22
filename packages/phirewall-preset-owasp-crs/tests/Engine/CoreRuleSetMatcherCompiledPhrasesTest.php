@@ -8,8 +8,8 @@ use Flowd\Phirewall\Support\CompiledDataCache;
 use Flowd\PhirewallPresetOwaspCrs\Engine\CoreRuleSetMatcher;
 use Flowd\PhirewallPresetOwaspCrs\ParanoiaLevel;
 use Flowd\PhirewallPresetOwaspCrs\RuleSetLoader;
+use Flowd\PhirewallPresetOwaspCrs\Tests\TemporaryFiles;
 use Nyholm\Psr7\ServerRequest;
-use org\bovigo\vfs\vfsStream;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -18,6 +18,8 @@ use PHPUnit\Framework\TestCase;
  */
 final class CoreRuleSetMatcherCompiledPhrasesTest extends TestCase
 {
+    use TemporaryFiles;
+
     /**
      * %s is the phrase file, named differently in every test: phrase files
      * that are read when a rule is used are remembered per process.
@@ -28,11 +30,11 @@ final class CoreRuleSetMatcherCompiledPhrasesTest extends TestCase
         SecRule REQUEST_URI "@pm inline-one inline-two" "id:410003,phase:2,deny,msg:'Inline phrases'"
         RULES;
 
-    private const RULES_DIRECTORY = 'vfs://crs/rules';
-
-    private const CACHE_DIRECTORY = 'vfs://crs/cache';
-
     private static int $testNumber = 0;
+
+    private string $rulesDirectory = '';
+
+    private string $cacheDirectory = '';
 
     private string $phraseFile = '';
 
@@ -40,13 +42,12 @@ final class CoreRuleSetMatcherCompiledPhrasesTest extends TestCase
     {
         CompiledDataCache::clearProcessCache();
 
-        vfsStream::setup('crs');
-        mkdir(self::RULES_DIRECTORY);
-        mkdir(self::CACHE_DIRECTORY);
-        $this->phraseFile = self::RULES_DIRECTORY . '/phrases-' . ++self::$testNumber . '.data';
-        $this->write(self::RULES_DIRECTORY . '/REQUEST-410-TEST.pl1.conf', sprintf(self::RULES, basename($this->phraseFile)), 1_000_000);
+        $this->rulesDirectory = $this->temporaryDirectory('rules');
+        $this->cacheDirectory = $this->temporaryDirectory('cache');
+        $this->phraseFile = $this->rulesDirectory . '/phrases-' . ++self::$testNumber . '.data';
+        $this->write($this->rulesDirectory . '/REQUEST-410-TEST.pl1.conf', sprintf(self::RULES, basename($this->phraseFile)), 1_000_000);
         $this->write($this->phraseFile, "# comment\nalpha\nBeta\nalpha\n", 1_000_000);
-        $this->write(self::RULES_DIRECTORY . '/other.txt', "gamma\n", 1_000_000);
+        $this->write($this->rulesDirectory . '/other.txt', "gamma\n", 1_000_000);
     }
 
     private function write(string $file, string $content, int $modified): void
@@ -62,9 +63,9 @@ final class CoreRuleSetMatcherCompiledPhrasesTest extends TestCase
     {
         clearstatcache();
         CompiledDataCache::clearProcessCache();
-        $matcher = CoreRuleSetMatcher::fromRuleFiles(ParanoiaLevel::Level1, self::RULES_DIRECTORY, null, 1);
+        $matcher = CoreRuleSetMatcher::fromRuleFiles(ParanoiaLevel::Level1, $this->rulesDirectory, null, 1);
         if ($withCache) {
-            $matcher->useCompiledDataCache(new CompiledDataCache(self::CACHE_DIRECTORY));
+            $matcher->useCompiledDataCache(new CompiledDataCache($this->cacheDirectory));
         }
 
         return $matcher;
@@ -82,7 +83,7 @@ final class CoreRuleSetMatcherCompiledPhrasesTest extends TestCase
      */
     private function artifactIdentifier(): string
     {
-        return 'owasp-crs-v3-pl1-' . sha1(self::RULES_DIRECTORY);
+        return 'owasp-crs-v3-pl1-' . sha1($this->rulesDirectory);
     }
 
     /**
@@ -92,7 +93,7 @@ final class CoreRuleSetMatcherCompiledPhrasesTest extends TestCase
     {
         clearstatcache();
 
-        return RuleSetLoader::fingerprint([...RuleSetLoader::ruleFiles(ParanoiaLevel::Level1, self::RULES_DIRECTORY), ...RuleSetLoader::dataFiles(self::RULES_DIRECTORY)]);
+        return RuleSetLoader::fingerprint([...RuleSetLoader::ruleFiles(ParanoiaLevel::Level1, $this->rulesDirectory), ...RuleSetLoader::dataFiles($this->rulesDirectory)]);
     }
 
     /**
@@ -102,7 +103,7 @@ final class CoreRuleSetMatcherCompiledPhrasesTest extends TestCase
     {
         CompiledDataCache::clearProcessCache();
 
-        return (new CompiledDataCache(self::CACHE_DIRECTORY))->load($this->artifactIdentifier(), [], static function (): array {
+        return (new CompiledDataCache($this->cacheDirectory))->load($this->artifactIdentifier(), [], static function (): array {
             self::fail('The artifact is expected to exist.');
         });
     }
@@ -112,7 +113,7 @@ final class CoreRuleSetMatcherCompiledPhrasesTest extends TestCase
      */
     private function artifactFiles(): array
     {
-        return array_values(array_filter(scandir(self::CACHE_DIRECTORY) ?: [], static fn(string $file): bool => is_file(self::CACHE_DIRECTORY . '/' . $file)));
+        return array_values(array_filter(scandir($this->cacheDirectory) ?: [], fn(string $file): bool => is_file($this->cacheDirectory . '/' . $file)));
     }
 
     public function testCachedAndUncachedMatchersAgree(): void
@@ -152,7 +153,7 @@ final class CoreRuleSetMatcherCompiledPhrasesTest extends TestCase
     public function testAChangedPhraseFileIsNoticedEvenWhenAnotherFileIsNewer(): void
     {
         // The rule file is the newest source, before and after.
-        $this->write(self::RULES_DIRECTORY . '/REQUEST-410-TEST.pl1.conf', sprintf(self::RULES, basename($this->phraseFile)), 3_000_000);
+        $this->write($this->rulesDirectory . '/REQUEST-410-TEST.pl1.conf', sprintf(self::RULES, basename($this->phraseFile)), 3_000_000);
         $this->assertSame(410001, $this->matchedRule($this->matcher(), '/alpha'));
         $this->assertNull($this->matchedRule($this->matcher(), '/delta'));
 
@@ -199,11 +200,11 @@ final class CoreRuleSetMatcherCompiledPhrasesTest extends TestCase
         $this->matchedRule($this->matcher(), '/');
         $this->write($this->phraseFile, "delta\nepsilon\n", 2_000_000);
         $this->matchedRule($this->matcher(), '/');
-        $this->write(self::RULES_DIRECTORY . '/REQUEST-410-TEST.pl1.conf', sprintf(self::RULES, basename($this->phraseFile)) . "\n", 3_000_000);
+        $this->write($this->rulesDirectory . '/REQUEST-410-TEST.pl1.conf', sprintf(self::RULES, basename($this->phraseFile)) . "\n", 3_000_000);
         $this->matchedRule($this->matcher(), '/');
-        $this->write(self::RULES_DIRECTORY . '/more.data', "zeta\n", 1_000_000);
+        $this->write($this->rulesDirectory . '/more.data', "zeta\n", 1_000_000);
         $this->matchedRule($this->matcher(), '/');
-        unlink(self::RULES_DIRECTORY . '/more.data');
+        unlink($this->rulesDirectory . '/more.data');
 
         $this->assertSame(410001, $this->matchedRule($this->matcher(), '/epsilon'));
         $this->assertCount(1, $this->artifactFiles(), 'A newer artifact takes the place of the older one.');
@@ -247,7 +248,7 @@ final class CoreRuleSetMatcherCompiledPhrasesTest extends TestCase
         }
 
         $artifact['rules'] = $rules;
-        $compiledDataCache = new CompiledDataCache(self::CACHE_DIRECTORY);
+        $compiledDataCache = new CompiledDataCache($this->cacheDirectory);
         $compiledDataCache->forget($this->artifactIdentifier());
         $compiledDataCache->load($this->artifactIdentifier(), [], static fn(): array => $artifact);
 
@@ -256,7 +257,7 @@ final class CoreRuleSetMatcherCompiledPhrasesTest extends TestCase
 
     public function testAnUnsafeOperandStillFailsClosedWithACache(): void
     {
-        $this->write(self::RULES_DIRECTORY . '/REQUEST-411-TEST.pl1.conf', 'SecRule REQUEST_URI "@pmFromFile ../outside.data" "id:411001,phase:2,deny"', 1_000_000);
+        $this->write($this->rulesDirectory . '/REQUEST-411-TEST.pl1.conf', 'SecRule REQUEST_URI "@pmFromFile ../outside.data" "id:411001,phase:2,deny"', 1_000_000);
 
         $uncached = $this->matcher(false)->match(new ServerRequest('GET', '/nothing'));
         $building = $this->matcher()->match(new ServerRequest('GET', '/nothing'));

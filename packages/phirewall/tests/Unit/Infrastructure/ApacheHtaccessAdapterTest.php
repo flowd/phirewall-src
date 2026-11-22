@@ -5,21 +5,23 @@ declare(strict_types=1);
 namespace Flowd\Phirewall\Tests\Infrastructure;
 
 use Flowd\Phirewall\Infrastructure\ApacheHtaccessAdapter;
+use Flowd\Phirewall\Tests\Support\TemporaryFiles;
 use InvalidArgumentException;
-use org\bovigo\vfs\vfsStream;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 
 final class ApacheHtaccessAdapterTest extends TestCase
 {
+    use TemporaryFiles;
+
     private string $tmpDir = '';
 
     private string $htaccess = '';
 
     protected function setUp(): void
     {
-        $this->tmpDir = vfsStream::setup('root')->url();
+        $this->tmpDir = $this->temporaryPath();
         $this->htaccess = $this->tmpDir . '/.htaccess';
     }
 
@@ -645,9 +647,8 @@ final class ApacheHtaccessAdapterTest extends TestCase
         // directory occupies the sidecar `.lock` path, so fopen() cannot open it
         // as a file. mutate() must surface a clear error rather than silently
         // proceeding without the write lock.
-        $root = vfsStream::setup('lockjail');
-        vfsStream::newDirectory('.htaccess.lock')->at($root);
-        $adapter = new ApacheHtaccessAdapter($root->url() . '/.htaccess');
+        $this->temporaryDirectory('lockjail/.htaccess.lock');
+        $adapter = new ApacheHtaccessAdapter($this->temporaryPath('lockjail/.htaccess'));
 
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessageMatches('/Failed to open lock file:/');
@@ -712,7 +713,7 @@ final class ApacheHtaccessAdapterTest extends TestCase
         $adapter = new ApacheHtaccessAdapter($this->htaccess);
         $adapter->blockIp('203.0.113.1');
 
-        // scandir works with vfsStream (glob does not support stream wrappers)
+        // The names start with a dot, which a "*" pattern does not find.
         $entries = scandir($this->tmpDir) ?: [];
         $tmpFiles = array_filter($entries, static fn(string $entry): bool => str_starts_with($entry, '.htaccess.tmp.'));
 

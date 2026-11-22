@@ -12,37 +12,47 @@ use Flowd\Phirewall\Store\InMemoryCache;
 use Flowd\PhirewallPresetOwaspCrs\Engine\CoreRuleSetMatcher;
 use Flowd\PhirewallPresetOwaspCrs\ParanoiaLevel;
 use Flowd\PhirewallPresetOwaspCrs\Presets;
+use Flowd\PhirewallPresetOwaspCrs\Tests\TemporaryFiles;
 use Nyholm\Psr7\ServerRequest;
-use org\bovigo\vfs\vfsStream;
-use org\bovigo\vfs\vfsStreamDirectory;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Message\ServerRequestInterface;
 
 final class PresetsTest extends TestCase
 {
-    private function setUpRulesDirectory(): vfsStreamDirectory
+    use TemporaryFiles;
+
+    /**
+     * @return string The rules directory.
+     */
+    private function setUpRulesDirectory(): string
     {
-        return vfsStream::setup('rules', null, [
-            'REQUEST-942-SQLI.pl1.conf' => 'SecRule ARGS|QUERY_STRING "@rx union[^a-z]+select" "id:942100,phase:2,block,msg:\'SQL Injection\'"' . "\n",
-            'REQUEST-941-XSS.pl2.conf' => 'SecRule ARGS|QUERY_STRING "@rx <script" "id:941100,phase:2,block,msg:\'XSS\'"' . "\n",
-            'manifest.json' => '{"crsVersion":"v4.0.0","importedAt":"2026-06-12T00:00:00+00:00"}',
-        ]);
+        $this->temporaryFile('REQUEST-942-SQLI.pl1.conf', 'SecRule ARGS|QUERY_STRING "@rx union[^a-z]+select" "id:942100,phase:2,block,msg:\'SQL Injection\'"' . "\n");
+        $this->temporaryFile('REQUEST-941-XSS.pl2.conf', 'SecRule ARGS|QUERY_STRING "@rx <script" "id:941100,phase:2,block,msg:\'XSS\'"' . "\n");
+        $this->temporaryFile('manifest.json', '{"crsVersion":"v4.0.0","importedAt":"2026-06-12T00:00:00+00:00"}');
+
+        return $this->temporaryPath();
     }
 
-    private function setUpWarningRulesDirectory(): vfsStreamDirectory
+    /**
+     * @return string The rules directory.
+     */
+    private function setUpWarningRulesDirectory(): string
     {
-        return vfsStream::setup('rules', null, [
-            'REQUEST-942-ANOMALY.pl1.conf' => 'SecRule ARGS "@contains first-pattern" "id:942430,phase:2,block,severity:\'WARNING\'"' . "\n"
+        $this->temporaryFile(
+            'REQUEST-942-ANOMALY.pl1.conf',
+            'SecRule ARGS "@contains first-pattern" "id:942430,phase:2,block,severity:\'WARNING\'"' . "\n"
                 . 'SecRule ARGS "@contains second-pattern" "id:942431,phase:2,block,severity:\'WARNING\'"' . "\n",
-            'manifest.json' => '{"crsVersion":"v4.0.0","importedAt":"2026-06-12T00:00:00+00:00"}',
-        ]);
+        );
+        $this->temporaryFile('manifest.json', '{"crsVersion":"v4.0.0","importedAt":"2026-06-12T00:00:00+00:00"}');
+
+        return $this->temporaryPath();
     }
 
     public function testBlocklistOverlayBlocksMatchingRequestsAfterMerge(): void
     {
-        $root = $this->setUpRulesDirectory();
+        $rulesDirectory = $this->setUpRulesDirectory();
         $baseConfig = new Config(new InMemoryCache());
-        $config = $baseConfig->with(Presets::blocklist(ParanoiaLevel::Level1, $root->url()));
+        $config = $baseConfig->with(Presets::blocklist(ParanoiaLevel::Level1, $rulesDirectory));
 
         $firewall = new Firewall($config);
 
@@ -52,22 +62,22 @@ final class PresetsTest extends TestCase
 
     public function testBlocklistRespectsTheParanoiaLevel(): void
     {
-        $root = $this->setUpRulesDirectory();
+        $rulesDirectory = $this->setUpRulesDirectory();
         $baseConfig = new Config(new InMemoryCache());
         $xssRequest = $this->requestWithQuery('<script>alert(1)</script>');
 
-        $levelOneFirewall = new Firewall($baseConfig->with(Presets::blocklist(ParanoiaLevel::Level1, $root->url())));
+        $levelOneFirewall = new Firewall($baseConfig->with(Presets::blocklist(ParanoiaLevel::Level1, $rulesDirectory)));
         $this->assertFalse($levelOneFirewall->decide($xssRequest)->isBlocked());
 
-        $levelTwoFirewall = new Firewall($baseConfig->with(Presets::blocklist(ParanoiaLevel::Level2, $root->url())));
+        $levelTwoFirewall = new Firewall($baseConfig->with(Presets::blocklist(ParanoiaLevel::Level2, $rulesDirectory)));
         $this->assertTrue($levelTwoFirewall->decide($xssRequest)->isBlocked());
     }
 
     public function testBlocklistAccumulatesAnomalyScoresAcrossRules(): void
     {
-        $root = $this->setUpWarningRulesDirectory();
+        $rulesDirectory = $this->setUpWarningRulesDirectory();
         $baseConfig = new Config(new InMemoryCache());
-        $firewall = new Firewall($baseConfig->with(Presets::blocklist(ParanoiaLevel::Level1, $root->url())));
+        $firewall = new Firewall($baseConfig->with(Presets::blocklist(ParanoiaLevel::Level1, $rulesDirectory)));
 
         $singleWarning = $this->requestWithQuery('first-pattern');
         $this->assertFalse($firewall->decide($singleWarning)->isBlocked(), 'One WARNING (3) stays below the default threshold of 5');
@@ -79,10 +89,10 @@ final class PresetsTest extends TestCase
 
     public function testBlocklistAnomalyThresholdIsConfigurable(): void
     {
-        $root = $this->setUpWarningRulesDirectory();
+        $rulesDirectory = $this->setUpWarningRulesDirectory();
         $baseConfig = new Config(new InMemoryCache());
         $firewall = new Firewall($baseConfig->with(
-            Presets::blocklist(ParanoiaLevel::Level1, $root->url(), anomalyThreshold: 3),
+            Presets::blocklist(ParanoiaLevel::Level1, $rulesDirectory, anomalyThreshold: 3),
         ));
 
         $this->assertTrue($firewall->decide($this->requestWithQuery('first-pattern'))->isBlocked(), 'WARNING (3) >= 3 blocks');
@@ -90,11 +100,11 @@ final class PresetsTest extends TestCase
 
     public function testBlocklistConfigureClosureAppliesExclusionsBeforeFirstUse(): void
     {
-        $root = $this->setUpRulesDirectory();
+        $rulesDirectory = $this->setUpRulesDirectory();
         $baseConfig = new Config(new InMemoryCache());
         $firewall = new Firewall($baseConfig->with(Presets::blocklist(
             ParanoiaLevel::Level1,
-            $root->url(),
+            $rulesDirectory,
             configure: static function (CoreRuleSetMatcher $coreRuleSetMatcher): void {
                 $coreRuleSetMatcher->excludeTarget('ARGS:/^utm_/');
             },
@@ -109,19 +119,19 @@ final class PresetsTest extends TestCase
 
     public function testBlocklistRegistersTheNamedPresetRule(): void
     {
-        $root = $this->setUpRulesDirectory();
+        $rulesDirectory = $this->setUpRulesDirectory();
 
-        $config = (new Config(new InMemoryCache()))->with(Presets::blocklist(ParanoiaLevel::Level1, $root->url()));
+        $config = (new Config(new InMemoryCache()))->with(Presets::blocklist(ParanoiaLevel::Level1, $rulesDirectory));
 
         $this->assertArrayHasKey(Presets::BLOCKLIST_RULE_NAME, $config->blocklists->rules());
     }
 
     public function testFail2banRegistersARuleMatchingCrsHits(): void
     {
-        $root = $this->setUpRulesDirectory();
+        $rulesDirectory = $this->setUpRulesDirectory();
 
         $config = (new Config(new InMemoryCache()))->with(
-            Presets::fail2ban(ParanoiaLevel::Level1, threshold: 3, period: 120, ban: 900, rulesDirectory: $root->url()),
+            Presets::fail2ban(ParanoiaLevel::Level1, threshold: 3, period: 120, ban: 900, rulesDirectory: $rulesDirectory),
         );
 
         $rules = $config->fail2ban->rules();
@@ -139,10 +149,10 @@ final class PresetsTest extends TestCase
 
     public function testFail2banBlocksEveryCrsMatchAndBansRepeatOffender(): void
     {
-        $root = $this->setUpRulesDirectory();
+        $rulesDirectory = $this->setUpRulesDirectory();
         $diagnostics = new DiagnosticsCounters();
         $config = (new Config(new InMemoryCache(), new DiagnosticsDispatcher($diagnostics)))->with(
-            Presets::fail2ban(ParanoiaLevel::Level1, threshold: 3, period: 120, ban: 900, rulesDirectory: $root->url()),
+            Presets::fail2ban(ParanoiaLevel::Level1, threshold: 3, period: 120, ban: 900, rulesDirectory: $rulesDirectory),
         );
         $firewall = new Firewall($config);
 
@@ -173,18 +183,18 @@ final class PresetsTest extends TestCase
 
     public function testCoreRuleSetExposesTheLoadedRules(): void
     {
-        $root = $this->setUpRulesDirectory();
+        $rulesDirectory = $this->setUpRulesDirectory();
 
-        $coreRuleSet = Presets::coreRuleSet(ParanoiaLevel::Level2, $root->url());
+        $coreRuleSet = Presets::coreRuleSet(ParanoiaLevel::Level2, $rulesDirectory);
 
         $this->assertSame([941100, 942100], $coreRuleSet->ids());
     }
 
     public function testCrsVersionComesFromTheManifest(): void
     {
-        $root = $this->setUpRulesDirectory();
+        $rulesDirectory = $this->setUpRulesDirectory();
 
-        $this->assertSame('v4.0.0', Presets::crsVersion($root->url()));
+        $this->assertSame('v4.0.0', Presets::crsVersion($rulesDirectory));
     }
 
     private function requestWithQuery(string $queryValue): ServerRequestInterface

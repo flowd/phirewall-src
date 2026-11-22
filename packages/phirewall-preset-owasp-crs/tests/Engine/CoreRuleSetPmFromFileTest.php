@@ -5,15 +5,16 @@ declare(strict_types=1);
 namespace Flowd\PhirewallPresetOwaspCrs\Tests\Engine;
 
 use Flowd\PhirewallPresetOwaspCrs\Engine\SecRuleLoader;
+use Flowd\PhirewallPresetOwaspCrs\Tests\TemporaryFiles;
 use Nyholm\Psr7\ServerRequest;
-use org\bovigo\vfs\vfsStream;
 use PHPUnit\Framework\TestCase;
 
 final class CoreRuleSetPmFromFileTest extends TestCase
 {
+    use TemporaryFiles;
+
     public function testPmFromFileHappyPathAndCaseInsensitive(): void
     {
-        $root = vfsStream::setup('rules');
         // Each non-comment line is one phrase (@pmFromFile / ModSecurity semantics).
         $content = <<<'TXT'
 # comment line
@@ -24,12 +25,12 @@ alpha
 beta
 gamma
 TXT;
-        vfsStream::newFile('phrases.txt')->at($root)->setContent($content);
+        $this->temporaryFile('phrases.txt', $content);
 
         // Relative operand resolved against the context folder, as the loader does for
         // shipped rules; a raw stream-wrapper operand is rejected.
         $rulesText = 'SecRule REQUEST_URI "@pmFromFile phrases.txt" "id:730001,phase:2,deny,msg:\'PM file\'"';
-        $set = SecRuleLoader::fromString($rulesText, $root->url());
+        $set = SecRuleLoader::fromString($rulesText, $this->temporaryPath());
         $this->assertContains(730001, $set->ids(), 'Rule id should be loaded');
         $rule = $set->getRule(730001);
         $this->assertNotNull($rule);
@@ -52,25 +53,23 @@ TXT;
 
     public function testPmFromFileMissingFileIsSafeNoMatch(): void
     {
-        $root = vfsStream::setup('missing');
         $rulesText = 'SecRule REQUEST_URI "@pmFromFile nonexistent.txt" "id:730002,phase:2,deny"';
-        $coreRuleSet = SecRuleLoader::fromString($rulesText, $root->url());
+        $coreRuleSet = SecRuleLoader::fromString($rulesText, $this->temporaryPath());
         $this->assertSame([], $coreRuleSet->evaluate(new ServerRequest('GET', '/anything'))->matchedRuleIds());
     }
 
     public function testPmFromFileRespectsPhraseCap(): void
     {
-        $root = vfsStream::setup('rules');
         $buf = '';
         for ($i = 0; $i < 5005; ++$i) {
             $buf .= 'p' . $i . "\n";
         }
 
         $buf .= "beyond-cap\n";
-        vfsStream::newFile('many.txt')->at($root)->setContent($buf);
+        $this->temporaryFile('many.txt', $buf);
 
         $rulesText = 'SecRule REQUEST_URI "@pmFromFile many.txt" "id:730003,phase:2,deny"';
-        $set = SecRuleLoader::fromString($rulesText, $root->url());
+        $set = SecRuleLoader::fromString($rulesText, $this->temporaryPath());
 
         // Should match an early phrase (within cap)
         $this->assertSame([730003], $set->evaluate(new ServerRequest('GET', '/p10'))->matchedRuleIds());
@@ -94,12 +93,10 @@ TXT;
 
     public function testPmFromFileAllowsContextFolderWithDoubleDot(): void
     {
-        $root = vfsStream::setup('rules');
-        $subdir = vfsStream::newDirectory('sub')->at($root);
-        vfsStream::newFile('phrases.txt')->at($subdir)->setContent("blocked-word\n");
+        $this->temporaryFile('sub/phrases.txt', "blocked-word\n");
 
         // contextFolder contains '..' but filePath does not — should work
-        $contextFolder = $root->url() . '/sub/../sub';
+        $contextFolder = $this->temporaryPath('sub/../sub');
         $rulesText = 'SecRule ARGS "@pmFromFile phrases.txt" "id:730005,phase:2,deny"';
         $set = SecRuleLoader::fromString($rulesText, $contextFolder);
 
@@ -109,12 +106,11 @@ TXT;
 
     public function testPmFromFileTreatsAMultiWordLineAsOnePhrase(): void
     {
-        $root = vfsStream::setup('rules');
         // A multi-word entry is a single phrase; splitting it on whitespace would leave
         // a generic token like "Mozilla/5.0" that matches legitimate User-Agents.
-        vfsStream::newFile('scanners.data')->at($root)->setContent("Mozilla/5.0 (compatible; EvilScanner)\n");
+        $this->temporaryFile('scanners.data', "Mozilla/5.0 (compatible; EvilScanner)\n");
         $rulesText = 'SecRule REQUEST_HEADERS:User-Agent "@pmFromFile scanners.data" "id:730006,phase:1,deny"';
-        $set = SecRuleLoader::fromString($rulesText, $root->url());
+        $set = SecRuleLoader::fromString($rulesText, $this->temporaryPath());
 
         // The whole phrase matches (case-insensitive, substring).
         $this->assertSame([730006], $set->evaluate(

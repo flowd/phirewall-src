@@ -5,19 +5,19 @@ declare(strict_types=1);
 namespace Flowd\Phirewall\Tests\Support;
 
 use Flowd\Phirewall\Support\CompiledDataCache;
-use org\bovigo\vfs\vfsStream;
 use PHPUnit\Framework\TestCase;
 
 final class CompiledDataCacheTest extends TestCase
 {
+    use TemporaryFiles;
+
     protected function setUp(): void
     {
         CompiledDataCache::clearProcessCache();
     }
 
     /**
-     * List the compiled artifacts in a directory; glob() bypasses stream
-     * wrappers, so vfs directories are listed via scandir().
+     * List the compiled artifacts in a directory.
      *
      * @return list<string>
      */
@@ -58,8 +58,7 @@ final class CompiledDataCacheTest extends TestCase
 
     public function testBuildsOnceAndWritesTheCompiledArtifact(): void
     {
-        $root = vfsStream::setup('cache');
-        $cache = new CompiledDataCache($root->url());
+        $cache = new CompiledDataCache($this->temporaryPath());
         [$builder, $counter] = $this->countingBuilder();
 
         $first = $cache->load('crs-rules', [], $builder);
@@ -68,19 +67,18 @@ final class CompiledDataCacheTest extends TestCase
         $this->assertSame(['value' => 42], $first);
         $this->assertSame(['value' => 42], $second);
         $this->assertSame(1, $counter->count);
-        $this->assertCount(1, $this->compiledFiles($root->url()));
+        $this->assertCount(1, $this->compiledFiles($this->temporaryPath()));
     }
 
     public function testLoadsFromTheCompiledFileWithoutTheBuilder(): void
     {
-        $root = vfsStream::setup('cache');
         [$builder, $counter] = $this->countingBuilder(['ips' => ['203.0.113.9']]);
-        (new CompiledDataCache($root->url()))->load('bad-ips', [], $builder);
+        (new CompiledDataCache($this->temporaryPath()))->load('bad-ips', [], $builder);
         $this->assertSame(1, $counter->count);
 
         // A fresh process: the compiled artifact must satisfy the load alone.
         CompiledDataCache::clearProcessCache();
-        $data = (new CompiledDataCache($root->url()))->load('bad-ips', [], static function (): array {
+        $data = (new CompiledDataCache($this->temporaryPath()))->load('bad-ips', [], static function (): array {
             throw new \LogicException('The builder must not run on a compiled-file hit.');
         });
 
@@ -89,16 +87,15 @@ final class CompiledDataCacheTest extends TestCase
 
     public function testAForgottenIdentifierIsBuiltAgain(): void
     {
-        $root = vfsStream::setup('cache');
-        $cache = new CompiledDataCache($root->url());
+        $cache = new CompiledDataCache($this->temporaryPath());
         [$builder, $counter] = $this->countingBuilder();
         $cache->load('bad-ips', [], $builder);
         $cache->load('crs-rules', [], $builder);
-        $this->assertCount(2, $this->compiledFiles($root->url()));
+        $this->assertCount(2, $this->compiledFiles($this->temporaryPath()));
 
         $cache->forget('bad-ips');
 
-        $this->assertCount(1, $this->compiledFiles($root->url()), 'Only the artifact of the identifier is removed.');
+        $this->assertCount(1, $this->compiledFiles($this->temporaryPath()), 'Only the artifact of the identifier is removed.');
         $this->assertSame(['value' => 1], $cache->load('bad-ips', [], static fn(): array => ['value' => 1]));
         $this->assertSame(['value' => 42], $cache->load('crs-rules', [], $builder));
         $this->assertSame(2, $counter->count, 'The other identifier is still served from the cache.');
@@ -112,50 +109,42 @@ final class CompiledDataCacheTest extends TestCase
 
     public function testForgettingWhatWasNeverBuiltDoesNothing(): void
     {
-        $root = vfsStream::setup('cache');
+        (new CompiledDataCache($this->temporaryPath('missing')))->forget('bad-ips');
 
-        (new CompiledDataCache($root->url() . '/missing'))->forget('bad-ips');
-
-        $this->assertFalse($root->hasChild('missing'));
+        $this->assertFileDoesNotExist($this->temporaryPath('missing'));
     }
 
     public function testRebuildsWhenASourceFileChanges(): void
     {
-        $root = vfsStream::setup('cache');
-        $sourceFile = vfsStream::newFile('rules.conf')->at($root)->setContent('rule v1');
-        $sourceFile->lastModified(1_000_000);
+        $sourceFile = $this->temporaryFile('rules.conf', 'rule v1', 1_000_000);
 
-        $cache = new CompiledDataCache($root->url());
+        $cache = new CompiledDataCache($this->temporaryPath());
         [$builder, $counter] = $this->countingBuilder();
 
-        $cache->load('rules', [$sourceFile->url()], $builder);
+        $cache->load('rules', [$sourceFile], $builder);
         $this->assertSame(1, $counter->count);
 
         // Unchanged source: both the process cache and the artifact stay valid.
-        $cache->load('rules', [$sourceFile->url()], $builder);
+        $cache->load('rules', [$sourceFile], $builder);
         $this->assertSame(1, $counter->count);
 
-        // A newer source mtime invalidates even the warm process cache. PHP's
-        // stat cache would hide the in-process mtime change; between real
-        // requests it plays no role.
-        $sourceFile->lastModified(1_000_100);
-        clearstatcache();
-        $cache->load('rules', [$sourceFile->url()], $builder);
+        // A newer source mtime invalidates even the warm process cache.
+        $this->temporaryFile('rules.conf', 'rule v1', 1_000_100);
+        $cache->load('rules', [$sourceFile], $builder);
         $this->assertSame(2, $counter->count);
     }
 
     public function testCorruptCompiledFileFallsBackToTheBuilder(): void
     {
-        $root = vfsStream::setup('cache');
         [$builder, $counter] = $this->countingBuilder();
-        (new CompiledDataCache($root->url()))->load('rules', [], $builder);
+        (new CompiledDataCache($this->temporaryPath()))->load('rules', [], $builder);
 
-        $compiledFiles = $this->compiledFiles($root->url());
+        $compiledFiles = $this->compiledFiles($this->temporaryPath());
         $this->assertCount(1, $compiledFiles);
         file_put_contents($compiledFiles[0], '<?php this is not valid php');
 
         CompiledDataCache::clearProcessCache();
-        $data = (new CompiledDataCache($root->url()))->load('rules', [], $builder);
+        $data = (new CompiledDataCache($this->temporaryPath()))->load('rules', [], $builder);
 
         $this->assertSame(['value' => 42], $data);
         $this->assertSame(2, $counter->count);
@@ -163,49 +152,44 @@ final class CompiledDataCacheTest extends TestCase
 
     public function testWrongShapeArtifactFallsBackToTheBuilder(): void
     {
-        $root = vfsStream::setup('cache');
         [$builder, $counter] = $this->countingBuilder();
-        (new CompiledDataCache($root->url()))->load('rules', [], $builder);
+        (new CompiledDataCache($this->temporaryPath()))->load('rules', [], $builder);
 
-        $compiledFiles = $this->compiledFiles($root->url());
+        $compiledFiles = $this->compiledFiles($this->temporaryPath());
         $this->assertCount(1, $compiledFiles);
 
         // Parses fine, but data is not an array.
         file_put_contents($compiledFiles[0], "<?php return ['sourcesMtime' => 0, 'data' => 'not-an-array'];");
         CompiledDataCache::clearProcessCache();
-        (new CompiledDataCache($root->url()))->load('rules', [], $builder);
+        (new CompiledDataCache($this->temporaryPath()))->load('rules', [], $builder);
         $this->assertSame(2, $counter->count);
 
         // Parses fine, but the artifact is not the expected structure at all.
         file_put_contents($compiledFiles[0], '<?php return 42;');
         CompiledDataCache::clearProcessCache();
-        (new CompiledDataCache($root->url()))->load('rules', [], $builder);
+        (new CompiledDataCache($this->temporaryPath()))->load('rules', [], $builder);
         $this->assertSame(3, $counter->count);
     }
 
     public function testRebuildsWhenTheSourceMtimeMovesBackwards(): void
     {
-        $root = vfsStream::setup('cache');
-        $sourceFile = vfsStream::newFile('rules.conf')->at($root)->setContent('rule v2');
-        $sourceFile->lastModified(1_000_100);
+        $sourceFile = $this->temporaryFile('rules.conf', 'rule v2', 1_000_100);
 
-        $cache = new CompiledDataCache($root->url());
+        $cache = new CompiledDataCache($this->temporaryPath());
         [$builder, $counter] = $this->countingBuilder();
-        $cache->load('rules', [$sourceFile->url()], $builder);
+        $cache->load('rules', [$sourceFile], $builder);
         $this->assertSame(1, $counter->count);
 
         // A rollback restores an OLDER mtime; the equality check must
         // still treat it as a change.
-        $sourceFile->lastModified(1_000_000);
-        clearstatcache();
-        $cache->load('rules', [$sourceFile->url()], $builder);
+        $this->temporaryFile('rules.conf', 'rule v2', 1_000_000);
+        $cache->load('rules', [$sourceFile], $builder);
         $this->assertSame(2, $counter->count);
     }
 
     public function testRejectsTopLevelObjects(): void
     {
-        $root = vfsStream::setup('cache');
-        $cache = new CompiledDataCache($root->url());
+        $cache = new CompiledDataCache($this->temporaryPath());
 
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('plain data');
@@ -214,35 +198,41 @@ final class CompiledDataCacheTest extends TestCase
 
     public function testUnwritableDirectoryStillServesTheData(): void
     {
-        $root = vfsStream::setup('cache');
-        $root->chmod(0o555);
+        $directory = $this->temporaryPath();
+        chmod($directory, 0o555);
+        if (is_writable($directory)) {
+            chmod($directory, 0o755);
+            $this->markTestSkipped('This user writes to every directory, whatever its permissions (root).');
+        }
 
-        $cache = new CompiledDataCache($root->url());
-        [$builder, $counter] = $this->countingBuilder();
+        try {
+            $cache = new CompiledDataCache($directory);
+            [$builder, $counter] = $this->countingBuilder();
 
-        $this->assertSame(['value' => 42], $cache->load('rules', [], $builder));
-        $this->assertSame([], $this->compiledFiles($root->url()));
+            $this->assertSame(['value' => 42], $cache->load('rules', [], $builder));
+            $this->assertSame([], $this->compiledFiles($directory));
 
-        // The process memoization still prevents a rebuild per call.
-        $cache->load('rules', [], $builder);
-        $this->assertSame(1, $counter->count);
+            // The process memoization still prevents a rebuild per call.
+            $cache->load('rules', [], $builder);
+            $this->assertSame(1, $counter->count);
+        } finally {
+            chmod($directory, 0o755);
+        }
     }
 
     public function testMissingDirectoryIsCreatedForTheArtifact(): void
     {
-        $root = vfsStream::setup('cache');
-        $cache = new CompiledDataCache($root->url() . '/nested/cache');
+        $cache = new CompiledDataCache($this->temporaryPath('nested/cache'));
         [$builder] = $this->countingBuilder();
 
         $cache->load('rules', [], $builder);
 
-        $this->assertCount(1, $this->compiledFiles($root->url() . '/nested/cache'));
+        $this->assertCount(1, $this->compiledFiles($this->temporaryPath('nested/cache')));
     }
 
     public function testRejectsObjectsInTheBuiltData(): void
     {
-        $root = vfsStream::setup('cache');
-        $cache = new CompiledDataCache($root->url());
+        $cache = new CompiledDataCache($this->temporaryPath());
 
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('plain data');
@@ -251,15 +241,14 @@ final class CompiledDataCacheTest extends TestCase
 
     public function testIdentifiersAreSanitizedIntoDistinctFilesInsideTheDirectory(): void
     {
-        $root = vfsStream::setup('cache');
-        $cache = new CompiledDataCache($root->url());
+        $cache = new CompiledDataCache($this->temporaryPath());
         [$builder] = $this->countingBuilder();
 
         $cache->load('../escape/attempt', [], $builder);
         $cache->load('good.id', [], $builder);
 
-        $compiledFiles = $this->compiledFiles($root->url());
+        $compiledFiles = $this->compiledFiles($this->temporaryPath());
         $this->assertCount(2, $compiledFiles);
-        $this->assertFalse($root->hasChild('escape'));
+        $this->assertFileDoesNotExist($this->temporaryPath('escape'));
     }
 }

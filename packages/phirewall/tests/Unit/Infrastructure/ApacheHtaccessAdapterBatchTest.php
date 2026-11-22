@@ -5,18 +5,20 @@ declare(strict_types=1);
 namespace Flowd\Phirewall\Tests\Infrastructure;
 
 use Flowd\Phirewall\Infrastructure\ApacheHtaccessAdapter;
-use org\bovigo\vfs\vfsStream;
+use Flowd\Phirewall\Tests\Support\TemporaryFiles;
 use PHPUnit\Framework\TestCase;
 
 final class ApacheHtaccessAdapterBatchTest extends TestCase
 {
+    use TemporaryFiles;
+
     private string $tmpDir = '';
 
     private string $htaccess = '';
 
     protected function setUp(): void
     {
-        $this->tmpDir = vfsStream::setup('root')->url();
+        $this->tmpDir = $this->temporaryPath();
         $this->htaccess = $this->tmpDir . '/.htaccess';
     }
 

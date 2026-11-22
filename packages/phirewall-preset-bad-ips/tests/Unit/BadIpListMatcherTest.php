@@ -8,14 +8,16 @@ use Flowd\Phirewall\Matchers\IpMatcher;
 use Flowd\Phirewall\Support\CompiledDataCache;
 use Flowd\PhirewallPresetBadIps\BadIpList;
 use Flowd\PhirewallPresetBadIps\BadIpListMatcher;
+use Flowd\PhirewallPresetBadIps\Tests\TemporaryFiles;
 use Nyholm\Psr7\ServerRequest;
-use org\bovigo\vfs\vfsStream;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Message\ServerRequestInterface;
 
 final class BadIpListMatcherTest extends TestCase
 {
+    use TemporaryFiles;
+
     protected function setUp(): void
     {
         CompiledDataCache::clearProcessCache();
@@ -24,18 +26,16 @@ final class BadIpListMatcherTest extends TestCase
     public function testLoadsLazilyOnFirstMatchOnly(): void
     {
         // A missing data file must not throw at construction time ...
-        $matcher = BadIpListMatcher::fromDataFile('vfs://resources/missing.data');
+        $matcher = BadIpListMatcher::fromDataFile($this->temporaryPath('missing.data'));
 
         // ... but on first use.
-        vfsStream::setup('resources');
         $this->expectException(\RuntimeException::class);
         $matcher->match($this->requestFrom('192.0.2.1'));
     }
 
     public function testMatchesListedIpsAndPassesOthers(): void
     {
-        $root = vfsStream::setup('resources', null, ['bad-ips.data' => "192.0.2.1\n203.0.113.0/24\n"]);
-        $matcher = BadIpListMatcher::fromDataFile($root->url() . '/bad-ips.data');
+        $matcher = BadIpListMatcher::fromDataFile($this->temporaryFile('bad-ips.data', "192.0.2.1\n203.0.113.0/24\n"));
 
         $this->assertTrue($matcher->match($this->requestFrom('192.0.2.1'))->isMatch());
         $this->assertTrue($matcher->match($this->requestFrom('203.0.113.42'))->isMatch());
@@ -44,9 +44,8 @@ final class BadIpListMatcherTest extends TestCase
 
     public function testAMissingDataFileThrowsWithACacheAsWithout(): void
     {
-        $root = vfsStream::setup('resources');
-        $matcher = BadIpListMatcher::fromDataFile($root->url() . '/missing.data');
-        $matcher->useCompiledDataCache(new CompiledDataCache($root->url() . '/cache'));
+        $matcher = BadIpListMatcher::fromDataFile($this->temporaryPath('missing.data'));
+        $matcher->useCompiledDataCache(new CompiledDataCache($this->temporaryPath('cache')));
 
         try {
             $matcher->match($this->requestFrom('192.0.2.1'));
@@ -55,13 +54,12 @@ final class BadIpListMatcherTest extends TestCase
             $this->assertStringContainsString('not found', $runtimeException->getMessage());
         }
 
-        $this->assertFalse($root->hasChild('cache'), 'Nothing is cached for a file that is not there.');
+        $this->assertFileDoesNotExist($this->temporaryPath('cache'), 'Nothing is cached for a file that is not there.');
     }
 
     public function testAMissingDataFileIsReportedBeforeTheClientIpIsLookedAt(): void
     {
-        $root = vfsStream::setup('resources');
-        $matcher = BadIpListMatcher::fromDataFile($root->url() . '/missing.data');
+        $matcher = BadIpListMatcher::fromDataFile($this->temporaryPath('missing.data'));
 
         $this->expectException(\RuntimeException::class);
         $matcher->matchWithResolver($this->requestFrom('192.0.2.1'), static fn(): ?string => null);
@@ -69,26 +67,22 @@ final class BadIpListMatcherTest extends TestCase
 
     public function testCompiledDataCacheServesTheListWithoutReparsing(): void
     {
-        $root = vfsStream::setup('resources');
-        $dataFile = vfsStream::newFile('bad-ips.data')->at($root)->setContent("192.0.2.1\n");
-        $dataFile->lastModified(1_000_000);
+        $dataFile = $this->temporaryFile('bad-ips.data', "192.0.2.1\n", 1_000_000);
 
-        $cacheDirectory = vfsStream::newDirectory('cache')->at($root);
-        $compiledDataCache = new CompiledDataCache($cacheDirectory->url());
+        $cacheDirectory = $this->temporaryDirectory('cache');
+        $compiledDataCache = new CompiledDataCache($cacheDirectory);
 
-        $first = BadIpListMatcher::fromDataFile($dataFile->url());
+        $first = BadIpListMatcher::fromDataFile($dataFile);
         $first->useCompiledDataCache($compiledDataCache);
         $this->assertTrue($first->match($this->requestFrom('192.0.2.1'))->isMatch());
-        $this->assertCount(1, $cacheDirectory->getChildren(), 'One compiled artifact must be written.');
+        $this->assertCount(1, $this->entriesIn($cacheDirectory), 'One compiled artifact must be written.');
 
         // Corrupt the source while keeping its mtime and size: a fresh process
         // must be served entirely from the compiled artifact and never re-parse.
-        $dataFile->setContent("#nothing.\n");
-        $dataFile->lastModified(1_000_000);
-        clearstatcache();
+        $this->temporaryFile('bad-ips.data', "#nothing.\n", 1_000_000);
         CompiledDataCache::clearProcessCache();
 
-        $second = BadIpListMatcher::fromDataFile($dataFile->url());
+        $second = BadIpListMatcher::fromDataFile($dataFile);
         $second->useCompiledDataCache($compiledDataCache);
 
         $this->assertTrue($second->match($this->requestFrom('192.0.2.1'))->isMatch());
@@ -97,23 +91,19 @@ final class BadIpListMatcherTest extends TestCase
 
     public function testAChangedDataFileRebuildsTheArtifact(): void
     {
-        $root = vfsStream::setup('resources');
-        $dataFile = vfsStream::newFile('bad-ips.data')->at($root)->setContent("192.0.2.1\n");
-        $dataFile->lastModified(1_000_000);
+        $dataFile = $this->temporaryFile('bad-ips.data', "192.0.2.1\n", 1_000_000);
 
-        $cacheDirectory = vfsStream::newDirectory('cache')->at($root);
-        $compiledDataCache = new CompiledDataCache($cacheDirectory->url());
+        $cacheDirectory = $this->temporaryDirectory('cache');
+        $compiledDataCache = new CompiledDataCache($cacheDirectory);
 
-        $first = BadIpListMatcher::fromDataFile($dataFile->url());
+        $first = BadIpListMatcher::fromDataFile($dataFile);
         $first->useCompiledDataCache($compiledDataCache);
         $this->assertTrue($first->match($this->requestFrom('192.0.2.1'))->isMatch());
 
-        $dataFile->setContent("203.0.113.7\n198.51.100.0/24\n");
-        $dataFile->lastModified(1_000_100);
-        clearstatcache();
+        $this->temporaryFile('bad-ips.data', "203.0.113.7\n198.51.100.0/24\n", 1_000_100);
 
         // In the same process (a long-running worker building a new Config) ...
-        $second = BadIpListMatcher::fromDataFile($dataFile->url());
+        $second = BadIpListMatcher::fromDataFile($dataFile);
         $second->useCompiledDataCache($compiledDataCache);
         $this->assertFalse($second->match($this->requestFrom('192.0.2.1'))->isMatch());
         $this->assertTrue($second->match($this->requestFrom('203.0.113.7'))->isMatch());
@@ -121,39 +111,35 @@ final class BadIpListMatcherTest extends TestCase
 
         // ... and in a fresh one, which finds the rebuilt artifact.
         CompiledDataCache::clearProcessCache();
-        $dataFile->setContent("#..........\n#..............\n");
-        $dataFile->lastModified(1_000_100);
-        clearstatcache();
+        $this->temporaryFile('bad-ips.data', "#..........\n#..............\n", 1_000_100);
 
-        $third = BadIpListMatcher::fromDataFile($dataFile->url());
+        $third = BadIpListMatcher::fromDataFile($dataFile);
         $third->useCompiledDataCache($compiledDataCache);
         $this->assertFalse($third->match($this->requestFrom('192.0.2.1'))->isMatch());
         $this->assertTrue($third->match($this->requestFrom('203.0.113.7'))->isMatch());
-        $this->assertCount(1, $cacheDirectory->getChildren(), 'The artifact of a data file is replaced, not added to.');
+        $this->assertCount(1, $this->entriesIn($cacheDirectory), 'The artifact of a data file is replaced, not added to.');
     }
 
     public function testAChangedDataFileIsNoticedByAProcessThatLookedAtItLast(): void
     {
-        $root = vfsStream::setup('resources');
-        $dataFile = vfsStream::newFile('bad-ips.data')->at($root)->setContent("192.0.2.1\n");
-        $dataFile->lastModified(1_000_000);
+        $dataFile = $this->temporaryFile('bad-ips.data', "192.0.2.1\n", 1_000_000);
 
-        $compiledDataCache = new CompiledDataCache(vfsStream::newDirectory('cache')->at($root)->url());
+        $compiledDataCache = new CompiledDataCache($this->temporaryDirectory('cache'));
 
         // A long-running worker that builds a new Config: the second matcher is
         // served from the process, and the data file is the last file PHP asked
         // about, so PHP remembers its time and size.
         foreach ([1, 2] as $ignored) {
-            $matcher = BadIpListMatcher::fromDataFile($dataFile->url());
+            $matcher = BadIpListMatcher::fromDataFile($dataFile);
             $matcher->useCompiledDataCache($compiledDataCache);
             $this->assertTrue($matcher->match($this->requestFrom('192.0.2.1'))->isMatch());
         }
 
-        // No clearstatcache() here: the matcher must not rely on what PHP remembers.
-        $dataFile->setContent("203.0.113.7\n198.51.100.9\n");
-        $dataFile->lastModified(1_000_100);
+        // Replaced by another process, as an update is: PHP still remembers the
+        // old time and size, and the matcher must not rely on that.
+        $this->replaceFromAnotherProcess($dataFile, "203.0.113.7\n198.51.100.9\n", 1_000_100);
 
-        $third = BadIpListMatcher::fromDataFile($dataFile->url());
+        $third = BadIpListMatcher::fromDataFile($dataFile);
         $third->useCompiledDataCache($compiledDataCache);
 
         $this->assertTrue($third->match($this->requestFrom('203.0.113.7'))->isMatch());
@@ -162,25 +148,21 @@ final class BadIpListMatcherTest extends TestCase
 
     public function testAnArtifactIsNotUsedForADataFileOfAnotherSize(): void
     {
-        $root = vfsStream::setup('resources');
-        $dataFile = vfsStream::newFile('bad-ips.data')->at($root)->setContent("192.0.2.1\n");
-        $dataFile->lastModified(1_000_000);
+        $dataFile = $this->temporaryFile('bad-ips.data', "192.0.2.1\n", 1_000_000);
 
-        $cacheDirectory = vfsStream::newDirectory('cache')->at($root);
-        $compiledDataCache = new CompiledDataCache($cacheDirectory->url());
+        $cacheDirectory = $this->temporaryDirectory('cache');
+        $compiledDataCache = new CompiledDataCache($cacheDirectory);
 
-        $first = BadIpListMatcher::fromDataFile($dataFile->url());
+        $first = BadIpListMatcher::fromDataFile($dataFile);
         $first->useCompiledDataCache($compiledDataCache);
         $this->assertTrue($first->match($this->requestFrom('192.0.2.1'))->isMatch());
 
         // Replaced by a file with the same modification time, as deployments
         // that set every file to one fixed time do.
-        $dataFile->setContent("203.0.113.7\n198.51.100.9\n");
-        $dataFile->lastModified(1_000_000);
-        clearstatcache();
+        $this->temporaryFile('bad-ips.data', "203.0.113.7\n198.51.100.9\n", 1_000_000);
         CompiledDataCache::clearProcessCache();
 
-        $second = BadIpListMatcher::fromDataFile($dataFile->url());
+        $second = BadIpListMatcher::fromDataFile($dataFile);
         $second->useCompiledDataCache($compiledDataCache);
 
         $this->assertTrue($second->match($this->requestFrom('203.0.113.7'))->isMatch());
@@ -190,41 +172,35 @@ final class BadIpListMatcherTest extends TestCase
 
     public function testAnArtifactOfADataFileOfAnotherSizeIsReplaced(): void
     {
-        $root = vfsStream::setup('resources');
-        $dataFile = vfsStream::newFile('bad-ips.data')->at($root)->setContent("192.0.2.1\n");
-        $dataFile->lastModified(1_000_000);
+        $dataFile = $this->temporaryFile('bad-ips.data', "192.0.2.1\n", 1_000_000);
 
-        $cacheDirectory = vfsStream::newDirectory('cache')->at($root);
-        $compiledDataCache = new CompiledDataCache($cacheDirectory->url());
+        $cacheDirectory = $this->temporaryDirectory('cache');
+        $compiledDataCache = new CompiledDataCache($cacheDirectory);
 
-        $first = BadIpListMatcher::fromDataFile($dataFile->url());
+        $first = BadIpListMatcher::fromDataFile($dataFile);
         $first->useCompiledDataCache($compiledDataCache);
         $this->assertTrue($first->match($this->requestFrom('192.0.2.1'))->isMatch());
 
         // Another file with the same modification time, in a fresh process ...
-        $dataFile->setContent("203.0.113.7\n198.51.100.9\n");
-        $dataFile->lastModified(1_000_000);
-        clearstatcache();
+        $this->temporaryFile('bad-ips.data', "203.0.113.7\n198.51.100.9\n", 1_000_000);
         CompiledDataCache::clearProcessCache();
 
-        $second = BadIpListMatcher::fromDataFile($dataFile->url());
+        $second = BadIpListMatcher::fromDataFile($dataFile);
         $second->useCompiledDataCache($compiledDataCache);
         $this->assertTrue($second->match($this->requestFrom('203.0.113.7'))->isMatch());
 
         // ... leaves an artifact that serves the next process on its own: the
         // source is now nothing but a comment of the same size and time.
-        $dataFile->setContent('#' . str_repeat('.', 23) . "\n");
-        $dataFile->lastModified(1_000_000);
-        clearstatcache();
+        $this->temporaryFile('bad-ips.data', '#' . str_repeat('.', 23) . "\n", 1_000_000);
         CompiledDataCache::clearProcessCache();
 
-        $third = BadIpListMatcher::fromDataFile($dataFile->url());
+        $third = BadIpListMatcher::fromDataFile($dataFile);
         $third->useCompiledDataCache($compiledDataCache);
 
         $this->assertTrue($third->match($this->requestFrom('203.0.113.7'))->isMatch());
         $this->assertTrue($third->match($this->requestFrom('198.51.100.9'))->isMatch());
         $this->assertFalse($third->match($this->requestFrom('192.0.2.1'))->isMatch());
-        $this->assertCount(1, $cacheDirectory->getChildren(), 'The artifact is replaced, not added to.');
+        $this->assertCount(1, $this->entriesIn($cacheDirectory), 'The artifact is replaced, not added to.');
     }
 
     /**
@@ -233,19 +209,17 @@ final class BadIpListMatcherTest extends TestCase
     #[DataProvider('unusableArtifacts')]
     public function testUnexpectedArtifactShapeFallsBackToParsingTheSource(array $artifact): void
     {
-        $root = vfsStream::setup('resources');
-        $dataFile = vfsStream::newFile('bad-ips.data')->at($root)->setContent("192.0.2.1\n203.0.113.0/24\n");
-        $dataFile->lastModified(1_000_000);
+        $dataFile = $this->temporaryFile('bad-ips.data', "192.0.2.1\n203.0.113.0/24\n", 1_000_000);
 
-        $cacheDirectory = vfsStream::newDirectory('cache')->at($root);
-        $compiledDataCache = new CompiledDataCache($cacheDirectory->url());
+        $cacheDirectory = $this->temporaryDirectory('cache');
+        $compiledDataCache = new CompiledDataCache($cacheDirectory);
 
         // Seed a parseable but unusable artifact under the identifier the
         // matcher will look up.
-        $compiledDataCache->load($this->identifier($dataFile->url()), [$dataFile->url()], static fn(): array => $artifact);
+        $compiledDataCache->load($this->identifier($dataFile), [$dataFile], static fn(): array => $artifact);
         CompiledDataCache::clearProcessCache();
 
-        $matcher = BadIpListMatcher::fromDataFile($dataFile->url());
+        $matcher = BadIpListMatcher::fromDataFile($dataFile);
         $matcher->useCompiledDataCache($compiledDataCache);
 
         // The matcher must ignore the bad artifact and parse the source, so the
@@ -275,17 +249,15 @@ final class BadIpListMatcherTest extends TestCase
     public function testTheSeededArtifactIsTheOneTheMatcherReads(): void
     {
         // Guards the fallback tests above: a wrong identifier there would pass for the wrong reason.
-        $root = vfsStream::setup('resources');
-        $dataFile = vfsStream::newFile('bad-ips.data')->at($root)->setContent("192.0.2.1\n203.0.113.0/24\n");
-        $dataFile->lastModified(1_000_000);
+        $dataFile = $this->temporaryFile('bad-ips.data', "192.0.2.1\n203.0.113.0/24\n", 1_000_000);
 
-        $compiledDataCache = new CompiledDataCache($root->url() . '/cache');
+        $compiledDataCache = new CompiledDataCache($this->temporaryPath('cache'));
 
         $crafted = ['size' => 25, 'exact' => [inet_pton('198.51.100.1') => true], 'networks' => []];
-        $compiledDataCache->load($this->identifier($dataFile->url()), [$dataFile->url()], static fn(): array => $crafted);
+        $compiledDataCache->load($this->identifier($dataFile), [$dataFile], static fn(): array => $crafted);
         CompiledDataCache::clearProcessCache();
 
-        $matcher = BadIpListMatcher::fromDataFile($dataFile->url());
+        $matcher = BadIpListMatcher::fromDataFile($dataFile);
         $matcher->useCompiledDataCache($compiledDataCache);
 
         $this->assertTrue($matcher->match($this->requestFrom('198.51.100.1'))->isMatch());
@@ -294,26 +266,23 @@ final class BadIpListMatcherTest extends TestCase
 
     public function testACorruptArtifactFallsBackToParsingTheSource(): void
     {
-        $root = vfsStream::setup('resources');
-        $dataFile = vfsStream::newFile('bad-ips.data')->at($root)->setContent("192.0.2.1\n");
-        $dataFile->lastModified(1_000_000);
+        $dataFile = $this->temporaryFile('bad-ips.data', "192.0.2.1\n", 1_000_000);
 
-        $cacheDirectory = vfsStream::newDirectory('cache')->at($root);
-        $compiledDataCache = new CompiledDataCache($cacheDirectory->url());
+        $cacheDirectory = $this->temporaryDirectory('cache');
+        $compiledDataCache = new CompiledDataCache($cacheDirectory);
 
-        $first = BadIpListMatcher::fromDataFile($dataFile->url());
+        $first = BadIpListMatcher::fromDataFile($dataFile);
         $first->useCompiledDataCache($compiledDataCache);
         $this->assertTrue($first->match($this->requestFrom('192.0.2.1'))->isMatch());
 
-        $artifacts = $cacheDirectory->getChildren();
+        $artifacts = $this->entriesIn($cacheDirectory);
         $this->assertCount(1, $artifacts);
 
         foreach (['<?php return [', '<?php return 7;', '', '<?php throw new \LogicException("broken");'] as $content) {
-            file_put_contents($artifacts[0]->url(), $content);
-            clearstatcache();
+            file_put_contents($artifacts[0], $content);
             CompiledDataCache::clearProcessCache();
 
-            $matcher = BadIpListMatcher::fromDataFile($dataFile->url());
+            $matcher = BadIpListMatcher::fromDataFile($dataFile);
             $matcher->useCompiledDataCache($compiledDataCache);
 
             $this->assertTrue($matcher->match($this->requestFrom('192.0.2.1'))->isMatch(), $content);
@@ -323,9 +292,9 @@ final class BadIpListMatcherTest extends TestCase
 
     public function testACacheDirectoryThatCannotBeWrittenStillMatches(): void
     {
-        $root = vfsStream::setup('resources', null, ['bad-ips.data' => "192.0.2.1\n", 'blocked' => 'a file where the cache directory should be']);
-        $matcher = BadIpListMatcher::fromDataFile($root->url() . '/bad-ips.data');
-        $matcher->useCompiledDataCache(new CompiledDataCache($root->url() . '/blocked/cache'));
+        $matcher = BadIpListMatcher::fromDataFile($this->temporaryFile('bad-ips.data', "192.0.2.1\n"));
+        $blocked = $this->temporaryFile('blocked', 'a file where the cache directory should be');
+        $matcher->useCompiledDataCache(new CompiledDataCache($blocked . '/cache'));
 
         $this->assertTrue($matcher->match($this->requestFrom('192.0.2.1'))->isMatch());
         $this->assertFalse($matcher->match($this->requestFrom('192.0.2.2'))->isMatch());
@@ -334,9 +303,8 @@ final class BadIpListMatcherTest extends TestCase
     public function testDecidesLikeTheCoreIpMatcherOverTheSameList(): void
     {
         $content = "# header\n192.0.2.1\n::ffff:192.0.2.9\n203.0.113.0/24\n10.32.0.0/11\n::ffff:198.51.100.0/120\n2001:db8::/33\n2001:db8:ffff::1\nnot-an-address\n49.50.51.52\n\n";
-        $root = vfsStream::setup('resources', null, ['bad-ips.data' => $content]);
-        $dataFile = $root->url() . '/bad-ips.data';
-        $compiledDataCache = new CompiledDataCache($root->url() . '/cache');
+        $dataFile = $this->temporaryFile('bad-ips.data', $content);
+        $compiledDataCache = new CompiledDataCache($this->temporaryPath('cache'));
 
         $addresses = [
             '192.0.2.1', '192.0.2.2', '::ffff:192.0.2.1', '192.0.2.9', '203.0.113.255', '203.0.114.0', '10.31.255.255', '10.32.0.0',
@@ -373,8 +341,7 @@ final class BadIpListMatcherTest extends TestCase
 
     public function testTheClientIpComesFromTheGivenResolver(): void
     {
-        $root = vfsStream::setup('resources', null, ['bad-ips.data' => "192.0.2.1\n"]);
-        $matcher = BadIpListMatcher::fromDataFile($root->url() . '/bad-ips.data');
+        $matcher = BadIpListMatcher::fromDataFile($this->temporaryFile('bad-ips.data', "192.0.2.1\n"));
         $request = $this->requestFrom('8.8.8.8');
 
         $matchResult = $matcher->matchWithResolver($request, static fn(): string => '192.0.2.1');
@@ -389,19 +356,17 @@ final class BadIpListMatcherTest extends TestCase
 
     public function testTwoDataFilesNeverShareAnArtifact(): void
     {
-        $root = vfsStream::setup('resources', null, ['one.data' => "192.0.2.1\n", 'two.data' => "192.0.2.2\n"]);
-        foreach (['one.data', 'two.data'] as $name) {
-            $root->getChild($name)->lastModified(1_000_000);
-        }
+        $oneFile = $this->temporaryFile('one.data', "192.0.2.1\n", 1_000_000);
+        $twoFile = $this->temporaryFile('two.data', "192.0.2.2\n", 1_000_000);
 
-        $cacheDirectory = vfsStream::newDirectory('cache')->at($root);
-        $compiledDataCache = new CompiledDataCache($cacheDirectory->url());
+        $cacheDirectory = $this->temporaryDirectory('cache');
+        $compiledDataCache = new CompiledDataCache($cacheDirectory);
 
         foreach ([1, 2] as $run) {
             CompiledDataCache::clearProcessCache();
-            $one = BadIpListMatcher::fromDataFile($root->url() . '/one.data');
+            $one = BadIpListMatcher::fromDataFile($oneFile);
             $one->useCompiledDataCache($compiledDataCache);
-            $two = BadIpListMatcher::fromDataFile($root->url() . '/two.data');
+            $two = BadIpListMatcher::fromDataFile($twoFile);
             $two->useCompiledDataCache($compiledDataCache);
 
             $this->assertTrue($one->match($this->requestFrom('192.0.2.1'))->isMatch(), 'run ' . $run);
@@ -410,7 +375,7 @@ final class BadIpListMatcherTest extends TestCase
             $this->assertFalse($two->match($this->requestFrom('192.0.2.1'))->isMatch(), 'run ' . $run);
         }
 
-        $this->assertCount(2, $cacheDirectory->getChildren());
+        $this->assertCount(2, $this->entriesIn($cacheDirectory));
     }
 
     /**
@@ -419,9 +384,8 @@ final class BadIpListMatcherTest extends TestCase
      */
     public function testRaisesNothingUnderAStrictErrorHandler(): void
     {
-        $root = vfsStream::setup('resources', null, ['bad-ips.data' => "192.0.2.1\n203.0.113.0/24\n"]);
-        $dataFile = $root->url() . '/bad-ips.data';
-        $compiledDataCache = new CompiledDataCache($root->url() . '/cache');
+        $dataFile = $this->temporaryFile('bad-ips.data', "192.0.2.1\n203.0.113.0/24\n");
+        $compiledDataCache = new CompiledDataCache($this->temporaryPath('cache'));
 
         set_error_handler(static function (int $severity, string $message): never {
             throw new \ErrorException($message, 0, $severity);
@@ -454,21 +418,20 @@ final class BadIpListMatcherTest extends TestCase
 
     public function testCacheInjectedAfterAFirstMatchStillTakesEffect(): void
     {
-        $root = vfsStream::setup('resources');
-        $dataFile = vfsStream::newFile('bad-ips.data')->at($root)->setContent("192.0.2.1\n");
-        $cacheDirectory = vfsStream::newDirectory('cache')->at($root);
-        $compiledDataCache = new CompiledDataCache($cacheDirectory->url());
+        $dataFile = $this->temporaryFile('bad-ips.data', "192.0.2.1\n");
+        $cacheDirectory = $this->temporaryDirectory('cache');
+        $compiledDataCache = new CompiledDataCache($cacheDirectory);
 
-        $matcher = BadIpListMatcher::fromDataFile($dataFile->url());
+        $matcher = BadIpListMatcher::fromDataFile($dataFile);
 
         // Match once WITHOUT a cache: the table is built from the data file.
         $this->assertTrue($matcher->match($this->requestFrom('192.0.2.1'))->isMatch());
-        $this->assertSame([], $cacheDirectory->getChildren(), 'No artifact without a cache.');
+        $this->assertSame([], $this->entriesIn($cacheDirectory), 'No artifact without a cache.');
 
         // Injecting the cache afterwards must still activate it.
         $matcher->useCompiledDataCache($compiledDataCache);
         $this->assertTrue($matcher->match($this->requestFrom('192.0.2.1'))->isMatch());
-        $this->assertCount(1, $cacheDirectory->getChildren(), 'The cache injected late must write the artifact.');
+        $this->assertCount(1, $this->entriesIn($cacheDirectory), 'The cache injected late must write the artifact.');
         $this->assertFalse($matcher->match($this->requestFrom('192.0.2.2'))->isMatch());
     }
 

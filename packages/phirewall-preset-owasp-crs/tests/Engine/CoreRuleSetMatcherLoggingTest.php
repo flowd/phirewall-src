@@ -9,13 +9,15 @@ use Flowd\PhirewallPresetOwaspCrs\Engine\CoreRuleSet;
 use Flowd\PhirewallPresetOwaspCrs\Engine\CoreRuleSetMatcher;
 use Flowd\PhirewallPresetOwaspCrs\Engine\LogDataExpander;
 use Flowd\PhirewallPresetOwaspCrs\ParanoiaLevel;
+use Flowd\PhirewallPresetOwaspCrs\Tests\TemporaryFiles;
 use Nyholm\Psr7\ServerRequest;
-use org\bovigo\vfs\vfsStream;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\AbstractLogger;
 
 final class CoreRuleSetMatcherLoggingTest extends TestCase
 {
+    use TemporaryFiles;
+
     /**
      * @return AbstractLogger&object{records: list<array{level: string, message: string, context: array<string, mixed>}>}
      */
@@ -229,14 +231,13 @@ final class CoreRuleSetMatcherLoggingTest extends TestCase
 
     public function testQueuedExclusionTagIsValidatedOnceTheRulesLoad(): void
     {
-        $root = vfsStream::setup('crs');
-        $rulesDirectory = vfsStream::newDirectory('rules')->at($root);
-        vfsStream::newFile('REQUEST-400-TEST.pl1.conf')->at($rulesDirectory)->setContent(
+        $this->temporaryFile(
+            'rules/REQUEST-400-TEST.pl1.conf',
             'SecRule ARGS "@contains suspicious" "id:400104,phase:2,deny,severity:CRITICAL,tag:\'attack-sqli\'"' . "\n",
         );
 
         $logger = $this->loggerSpy();
-        $matcher = CoreRuleSetMatcher::fromRuleFiles(ParanoiaLevel::Level1, $rulesDirectory->url(), logger: $logger);
+        $matcher = CoreRuleSetMatcher::fromRuleFiles(ParanoiaLevel::Level1, $this->temporaryPath('rules'), logger: $logger);
         $matcher->excludeTargetByTag('OWASP_CRS/WEB_ATTACK/SQL_INJECTION', 'REQUEST_COOKIES:_pin_aem');
 
         $this->assertSame([], $logger->records, 'Validation waits for the rules to load');

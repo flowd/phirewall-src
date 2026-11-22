@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace Flowd\PhirewallPresetOwaspCrs\Tests\Engine;
 
 use Flowd\PhirewallPresetOwaspCrs\Engine\SecRuleLoader;
+use Flowd\PhirewallPresetOwaspCrs\Tests\TemporaryFiles;
 use Nyholm\Psr7\ServerRequest;
-use org\bovigo\vfs\vfsStream;
 use PHPUnit\Framework\TestCase;
 
 final class SecRuleLoaderTest extends TestCase
 {
+    use TemporaryFiles;
+
     public function testFromStringParsesMultilineSecRuleAndMatches(): void
     {
         $text = <<<'RULE'
@@ -61,12 +63,9 @@ RULE;
         // fromFiles()/fromDirectory(): an absolute operand is rejected rather than
         // silently read (arbitrary file read), and the rule fails closed (a
         // deterministic block) instead of throwing out of the matcher.
-        $root = vfsStream::setup('rules');
-        vfsStream::newFile('crs.conf')
-            ->withContent('SecRule REQUEST_URI "@pmFromFile /etc/passwd" "id:730001,phase:2,deny"' . "\n")
-            ->at($root);
+        $ruleFile = $this->temporaryFile('crs.conf', 'SecRule REQUEST_URI "@pmFromFile /etc/passwd" "id:730001,phase:2,deny"' . "\n");
 
-        $coreRuleSet = SecRuleLoader::fromFile($root->url() . '/crs.conf');
+        $coreRuleSet = SecRuleLoader::fromFile($ruleFile);
 
         $evaluation = $coreRuleSet->evaluate(new ServerRequest('GET', '/anything'));
 
@@ -94,22 +93,12 @@ TXT;
 
     public function testFromFilesLoadsConcatenatedFiles(): void
     {
-        $dir = sys_get_temp_dir() . '/phirewall_test_' . bin2hex(random_bytes(4));
-        mkdir($dir);
-        try {
-            $f1 = $dir . '/a.conf';
-            $f2 = $dir . '/b.conf';
-            file_put_contents($f1, "SecRule REQUEST_URI \"@contains a\" \"id:710001,phase:2,deny\"\n");
-            file_put_contents($f2, "SecRule REQUEST_URI \"@contains b\" \"id:710002,phase:2,deny\"\n");
+        $f1 = $this->temporaryFile('a.conf', "SecRule REQUEST_URI \"@contains a\" \"id:710001,phase:2,deny\"\n");
+        $f2 = $this->temporaryFile('b.conf', "SecRule REQUEST_URI \"@contains b\" \"id:710002,phase:2,deny\"\n");
 
-            $set = SecRuleLoader::fromFiles([$f1, $f2]);
-            $this->assertSame([710001], $set->evaluate(new ServerRequest('GET', '/a'))->matchedRuleIds());
-            $this->assertSame([710002], $set->evaluate(new ServerRequest('GET', '/b'))->matchedRuleIds());
-        } finally {
-            @unlink($dir . '/a.conf');
-            @unlink($dir . '/b.conf');
-            @rmdir($dir);
-        }
+        $set = SecRuleLoader::fromFiles([$f1, $f2]);
+        $this->assertSame([710001], $set->evaluate(new ServerRequest('GET', '/a'))->matchedRuleIds());
+        $this->assertSame([710002], $set->evaluate(new ServerRequest('GET', '/b'))->matchedRuleIds());
     }
 
     public function testFromFilesThrowsOnMissingFile(): void
@@ -120,25 +109,16 @@ TXT;
 
     public function testFromDirectoryLoadsSortedAndRespectsFilter(): void
     {
-        $dir = sys_get_temp_dir() . '/phirewall_test_' . bin2hex(random_bytes(4));
-        mkdir($dir);
-        try {
-            file_put_contents($dir . '/2.conf', "SecRule REQUEST_URI \"@contains two\" \"id:720002,phase:2,deny\"\n");
-            file_put_contents($dir . '/1.conf', "SecRule REQUEST_URI \"@contains one\" \"id:720001,phase:2,deny\"\n");
-            file_put_contents($dir . '/skip.txt', "SecRule REQUEST_URI \"@contains skip\" \"id:720999,phase:2,deny\"\n");
+        $this->temporaryFile('2.conf', "SecRule REQUEST_URI \"@contains two\" \"id:720002,phase:2,deny\"\n");
+        $this->temporaryFile('1.conf', "SecRule REQUEST_URI \"@contains one\" \"id:720001,phase:2,deny\"\n");
+        $this->temporaryFile('skip.txt', "SecRule REQUEST_URI \"@contains skip\" \"id:720999,phase:2,deny\"\n");
 
-            $filter = static fn(string $path): bool => str_ends_with($path, '.conf');
-            $set = SecRuleLoader::fromDirectory($dir, $filter);
+        $filter = static fn(string $path): bool => str_ends_with($path, '.conf');
+        $set = SecRuleLoader::fromDirectory($this->temporaryPath(), $filter);
 
-            // Sorted order means rule ids 720001 then 720002 are present; skip.txt ignored
-            $this->assertSame([720001], $set->evaluate(new ServerRequest('GET', '/one'))->matchedRuleIds());
-            $this->assertSame([720002], $set->evaluate(new ServerRequest('GET', '/two'))->matchedRuleIds());
-            $this->assertSame([], $set->evaluate(new ServerRequest('GET', '/skip'))->matchedRuleIds());
-        } finally {
-            @unlink($dir . '/1.conf');
-            @unlink($dir . '/2.conf');
-            @unlink($dir . '/skip.txt');
-            @rmdir($dir);
-        }
+        // Sorted order means rule ids 720001 then 720002 are present; skip.txt ignored
+        $this->assertSame([720001], $set->evaluate(new ServerRequest('GET', '/one'))->matchedRuleIds());
+        $this->assertSame([720002], $set->evaluate(new ServerRequest('GET', '/two'))->matchedRuleIds());
+        $this->assertSame([], $set->evaluate(new ServerRequest('GET', '/skip'))->matchedRuleIds());
     }
 }
