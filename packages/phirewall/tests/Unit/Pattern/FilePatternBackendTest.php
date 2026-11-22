@@ -7,15 +7,16 @@ namespace Flowd\Phirewall\Tests\Pattern;
 use Flowd\Phirewall\Pattern\FilePatternBackend;
 use Flowd\Phirewall\Pattern\PatternEntry;
 use Flowd\Phirewall\Pattern\PatternKind;
-use org\bovigo\vfs\vfsStream;
+use Flowd\Phirewall\Tests\Support\TemporaryFiles;
 use PHPUnit\Framework\TestCase;
 
 final class FilePatternBackendTest extends TestCase
 {
+    use TemporaryFiles;
+
     public function testConsumeParsesEntriesAndReturnsSnapshotWithVersion(): void
     {
-        vfsStream::setup('patterns', 0700);
-        $file = vfsStream::url('patterns/patterns.txt');
+        $file = $this->temporaryPath('patterns.txt');
 
         $now = 1_700_000_000;
         $filePatternBackend = new FilePatternBackend($file, now: static fn(): int => $now);
@@ -40,8 +41,7 @@ final class FilePatternBackendTest extends TestCase
 
     public function testAppendMergesAndPrunesExpired(): void
     {
-        vfsStream::setup('patterns', 0700);
-        $file = vfsStream::url('patterns/patterns.txt');
+        $file = $this->temporaryPath('patterns.txt');
 
         $now = 1_700_000_000;
         $filePatternBackend = new FilePatternBackend($file, now: static function () use (&$now): int {
@@ -61,12 +61,11 @@ final class FilePatternBackendTest extends TestCase
 
     public function testIgnoresCommentsAndBlankLines(): void
     {
-        vfsStream::setup('patterns', 0700);
-        $file = vfsStream::url('patterns/patterns.txt');
+        $file = $this->temporaryPath('patterns.txt');
 
         $filePatternBackend = new FilePatternBackend($file, now: static fn(): int => 1_700_000_000);
 
-        file_put_contents($file, "#comment\n;note\n\n" . PatternKind::IP->value . "|203.0.113.77|||1700000000\n");
+        $this->temporaryFile('patterns.txt', "#comment\n;note\n\n" . PatternKind::IP->value . "|203.0.113.77|||1700000000\n");
 
         $patternSnapshot = $filePatternBackend->consume();
         $this->assertCount(1, $patternSnapshot->entries);
@@ -79,11 +78,7 @@ final class FilePatternBackendTest extends TestCase
      */
     public function testConsumeReusesSnapshotWhileModificationTimeUnchanged(): void
     {
-        $root = vfsStream::setup('patterns', 0700);
-        $file = vfsStream::url('patterns/patterns.txt');
-
-        file_put_contents($file, PatternKind::IP->value . "|203.0.113.10|||1700000000\n");
-        $root->getChild('patterns.txt')->lastModified(1_700_000_000);
+        $file = $this->temporaryFile('patterns.txt', PatternKind::IP->value . "|203.0.113.10|||1700000000\n", 1_700_000_000);
 
         $filePatternBackend = new FilePatternBackend($file, now: static fn(): int => 1_700_000_000);
 
@@ -99,19 +94,24 @@ final class FilePatternBackendTest extends TestCase
      */
     public function testConsumeReparsesWhenModificationTimeAdvances(): void
     {
-        $root = vfsStream::setup('patterns', 0700);
-        $file = vfsStream::url('patterns/patterns.txt');
-
-        file_put_contents($file, PatternKind::IP->value . "|203.0.113.10|||1700000000\n");
-        $root->getChild('patterns.txt')->lastModified(1_700_000_000);
+        $file = $this->temporaryFile('patterns.txt', PatternKind::IP->value . "|203.0.113.10|||1700000000\n", 1_700_000_000);
 
         $filePatternBackend = new FilePatternBackend($file, now: static fn(): int => 1_700_000_000);
 
         $first = $filePatternBackend->consume();
         $this->assertCount(1, $first->entries);
 
-        file_put_contents($file, PatternKind::IP->value . "|203.0.113.10|||1700000000\n" . PatternKind::IP->value . "|203.0.113.11|||1700000000\n");
-        $root->getChild('patterns.txt')->lastModified(1_700_000_005);
+        // The next request of a long-running worker: the pattern file is now
+        // the last file PHP asked about, so PHP remembers its time and size.
+        $filePatternBackend->consume();
+
+        // Replaced by another process, as an update is: the backend must not
+        // rely on what PHP remembers.
+        $this->replaceFromAnotherProcess(
+            $file,
+            PatternKind::IP->value . "|203.0.113.10|||1700000000\n" . PatternKind::IP->value . "|203.0.113.11|||1700000000\n",
+            1_700_000_005,
+        );
 
         $second = $filePatternBackend->consume();
         $this->assertNotSame($first, $second, 'Advanced mtime must produce a freshly parsed snapshot');
@@ -127,12 +127,8 @@ final class FilePatternBackendTest extends TestCase
      */
     public function testConsumeDropsExpiredEntryOnUnchangedFile(): void
     {
-        $root = vfsStream::setup('patterns', 0700);
-        $file = vfsStream::url('patterns/patterns.txt');
-
         // kind|value|target|expiresAt|addedAt — expires at 1_700_000_010.
-        file_put_contents($file, PatternKind::IP->value . "|203.0.113.10||1700000010|1700000000\n");
-        $root->getChild('patterns.txt')->lastModified(1_700_000_000);
+        $file = $this->temporaryFile('patterns.txt', PatternKind::IP->value . "|203.0.113.10||1700000010|1700000000\n", 1_700_000_000);
 
         $now = 1_700_000_000;
         $filePatternBackend = new FilePatternBackend($file, now: static function () use (&$now): int {
@@ -166,21 +162,20 @@ final class FilePatternBackendTest extends TestCase
      */
     public function testConsumeReflectsWriteWithinSameSecond(): void
     {
-        $root = vfsStream::setup('patterns', 0700);
-        $file = vfsStream::url('patterns/patterns.txt');
+        $file = $this->temporaryPath('patterns.txt');
 
         $now = 1_700_000_000;
         $filePatternBackend = new FilePatternBackend($file, now: static fn(): int => $now);
 
         $filePatternBackend->append(new PatternEntry(PatternKind::IP, '203.0.113.10', addedAt: $now));
-        $root->getChild('patterns.txt')->lastModified($now);
+        touch($file, $now);
 
         $first = $filePatternBackend->consume();
         $this->assertCount(1, $first->entries);
 
         // Append again and pin the mtime to the same second to force a collision.
         $filePatternBackend->append(new PatternEntry(PatternKind::IP, '203.0.113.11', addedAt: $now));
-        $root->getChild('patterns.txt')->lastModified($now);
+        touch($file, $now);
 
         $second = $filePatternBackend->consume();
         $this->assertCount(2, $second->entries, 'A same-second self-write must not be masked by the consume() cache');
@@ -192,16 +187,15 @@ final class FilePatternBackendTest extends TestCase
      */
     public function testAppendCreatesMissingDirectoryWithOwnerOnlyPermissions(): void
     {
-        $root = vfsStream::setup('patterns', 0700);
-        $file = vfsStream::url('patterns/nested/deep/patterns.txt');
+        $file = $this->temporaryPath('nested/deep/patterns.txt');
 
         $now = 1_700_000_000;
         $filePatternBackend = new FilePatternBackend($file, now: static fn(): int => $now);
 
         $filePatternBackend->append(new PatternEntry(PatternKind::IP, '203.0.113.10', addedAt: $now));
 
-        $this->assertTrue($root->hasChild('nested/deep'));
-        $this->assertSame(0700, $root->getChild('nested/deep')->getPermissions());
+        $this->assertDirectoryExists($this->temporaryPath('nested/deep'));
+        $this->assertSame(0700, fileperms($this->temporaryPath('nested/deep')) & 0777);
     }
 
     /**
@@ -211,8 +205,7 @@ final class FilePatternBackendTest extends TestCase
      */
     public function testPruneExpiredRewritesAtomicallyWithoutLeavingTempArtifacts(): void
     {
-        $root = vfsStream::setup('patterns', 0700);
-        $file = vfsStream::url('patterns/patterns.txt');
+        $file = $this->temporaryPath('patterns.txt');
 
         $now = 1_700_000_000;
         $filePatternBackend = new FilePatternBackend($file, now: static function () use (&$now): int {
@@ -231,8 +224,8 @@ final class FilePatternBackendTest extends TestCase
         $this->assertStringContainsString('203.0.113.10', $contents);
         $this->assertStringNotContainsString('203.0.113.99', $contents);
 
-        foreach ($root->getChildren() as $vfsStreamContent) {
-            $this->assertStringNotContainsString('.tmp.', $vfsStreamContent->getName(), 'Atomic rewrite must not leave a temp file behind');
+        foreach ($this->entriesIn($this->temporaryPath()) as $entry) {
+            $this->assertStringNotContainsString('.tmp.', basename($entry), 'Atomic rewrite must not leave a temp file behind');
         }
     }
 
@@ -244,8 +237,7 @@ final class FilePatternBackendTest extends TestCase
      */
     public function testFailedRewriteKeepsPreviousContentIntact(): void
     {
-        $root = vfsStream::setup('patterns', 0700);
-        $file = vfsStream::url('patterns/patterns.txt');
+        $file = $this->temporaryPath('patterns.txt');
 
         $now = 1_700_000_000;
         $filePatternBackend = new FilePatternBackend($file, now: static fn(): int => $now);
@@ -257,7 +249,12 @@ final class FilePatternBackendTest extends TestCase
 
         // Read-only directory: the existing file can still be opened for writing,
         // but the sibling temp file cannot be created, so the rename never happens.
-        $root->chmod(0500);
+        $directory = $this->temporaryPath();
+        chmod($directory, 0500);
+        if (is_writable($directory)) {
+            chmod($directory, 0700);
+            $this->markTestSkipped('This user writes to every directory, whatever its permissions (root).');
+        }
 
         $thrown = null;
         try {
@@ -265,7 +262,7 @@ final class FilePatternBackendTest extends TestCase
         } catch (\RuntimeException $runtimeException) {
             $thrown = $runtimeException;
         } finally {
-            $root->chmod(0700);
+            chmod($directory, 0700);
         }
 
         $this->assertInstanceOf(\RuntimeException::class, $thrown, 'A failed atomic write must surface as a RuntimeException');
@@ -279,8 +276,7 @@ final class FilePatternBackendTest extends TestCase
      */
     public function testWritersSerializeOnSidecarLockFileAndPreserveContent(): void
     {
-        $root = vfsStream::setup('patterns', 0700);
-        $file = vfsStream::url('patterns/patterns.txt');
+        $file = $this->temporaryPath('patterns.txt');
 
         $now = 1_700_000_000;
         $filePatternBackend = new FilePatternBackend($file, now: static fn(): int => $now);
@@ -288,8 +284,8 @@ final class FilePatternBackendTest extends TestCase
         $filePatternBackend->append(new PatternEntry(PatternKind::IP, '203.0.113.10', addedAt: $now));
         $filePatternBackend->append(new PatternEntry(PatternKind::IP, '203.0.113.11', addedAt: $now));
 
-        $this->assertTrue(
-            $root->hasChild('patterns.txt.lock'),
+        $this->assertFileExists(
+            $file . '.lock',
             'A sidecar .lock file must be created so the lock survives the rename that swaps the live inode'
         );
 

@@ -13,18 +13,18 @@ use Flowd\Phirewall\Pattern\PatternEntry;
 use Flowd\Phirewall\Pattern\PatternKind;
 use Flowd\Phirewall\Pattern\SnapshotBlocklistMatcher;
 use Flowd\Phirewall\Store\InMemoryCache;
+use Flowd\Phirewall\Tests\Support\TemporaryFiles;
 use Nyholm\Psr7\ServerRequest;
-use org\bovigo\vfs\vfsStream;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Message\ServerRequestInterface;
 
 final class SnapshotBlocklistMatcherTest extends TestCase
 {
+    use TemporaryFiles;
+
     public function testMatchesIpCidrAndPathAndHeaderRegex(): void
     {
-        $file = tempnam(sys_get_temp_dir(), 'phirewall-pattern-');
-        $this->assertIsString($file);
-        @unlink($file);
+        $file = $this->temporaryPath('patterns.txt');
 
         $filePatternBackend = new FilePatternBackend($file, now: static fn(): int => 1_700_000_000);
         $filePatternBackend->append(new PatternEntry(PatternKind::IP, '203.0.113.10'));
@@ -45,15 +45,11 @@ final class SnapshotBlocklistMatcherTest extends TestCase
 
         $headerRequest = (new ServerRequest('GET', '/any', ['User-Agent' => 'curl/8.0.0'], null, '1.1', ['REMOTE_ADDR' => '203.0.113.5']));
         $this->assertTrue($snapshotBlocklistMatcher->match($headerRequest)->isMatch(), 'Header regex should match');
-
-        @unlink($file);
     }
 
     public function testSkipsExpiredAndIgnoresInvalidRegex(): void
     {
-        $file = tempnam(sys_get_temp_dir(), 'phirewall-pattern-');
-        $this->assertIsString($file);
-        @unlink($file);
+        $file = $this->temporaryPath('patterns.txt');
 
         $now = 1_700_000_000;
         $backend = new FilePatternBackend($file, now: static fn(): int => $now);
@@ -74,8 +70,6 @@ final class SnapshotBlocklistMatcherTest extends TestCase
         // Ensure invalid regex pattern does not throw and does not match
         $headerRequest = new ServerRequest('GET', '/any', ['X-Test' => 'value'], null, '1.1', ['REMOTE_ADDR' => '198.51.100.10']);
         $this->assertFalse($matcher->match($headerRequest)->isMatch());
-
-        @unlink($file);
     }
 
     public function testIpv4MappedIpv6PeerMatchesIpv4EntryAndCidr(): void
@@ -167,12 +161,8 @@ final class SnapshotBlocklistMatcherTest extends TestCase
      */
     public function testLongLivedMatcherDropsExpiredEntryOnUnchangedFile(): void
     {
-        $root = vfsStream::setup('patterns', 0700);
-        $file = vfsStream::url('patterns/patterns.txt');
-
         // kind|value|target|expiresAt|addedAt — IP entry expiring at 1_700_000_010.
-        file_put_contents($file, PatternKind::IP->value . "|203.0.113.20||1700000010|1700000000\n");
-        $root->getChild('patterns.txt')->lastModified(1_700_000_000);
+        $file = $this->temporaryFile('patterns.txt', PatternKind::IP->value . "|203.0.113.20||1700000010|1700000000\n", 1_700_000_000);
 
         $now = 1_700_000_000;
         $backend = new FilePatternBackend($file, now: static function () use (&$now): int {

@@ -9,12 +9,13 @@ use Flowd\Phirewall\Matchers\Support\CidrMatcher;
 use Flowd\Phirewall\Support\CompiledDataCache;
 use Flowd\Phirewall\Support\IpLookupTable;
 use Nyholm\Psr7\ServerRequest;
-use org\bovigo\vfs\vfsStream;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class IpLookupTableTest extends TestCase
 {
+    use TemporaryFiles;
+
     protected function setUp(): void
     {
         CompiledDataCache::clearProcessCache();
@@ -150,8 +151,7 @@ final class IpLookupTableTest extends TestCase
         $entries = ['49.50.51.52', '0.0.0.0', '39.92.39.92', '48.0.0.0/8', '49.50.0.0/16', '0.39.92.0/24', '::', '::/128', '3132:3334::/32', '127.0.0.1'];
         $ipLookupTable = IpLookupTable::fromEntries($entries);
 
-        $root = vfsStream::setup('cache');
-        $compiledDataCache = new CompiledDataCache($root->url());
+        $compiledDataCache = new CompiledDataCache($this->temporaryPath());
         $compiledDataCache->load('table', [], static fn(): array => $ipLookupTable->toArray());
         CompiledDataCache::clearProcessCache();
 

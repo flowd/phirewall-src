@@ -235,8 +235,8 @@ final readonly class PhraseMatchFromFileEvaluator implements DetailedOperatorEva
      * sibling or parent directory) is the boundary decision enforced here. The
      * trailing separator on both operands prevents a sibling that merely shares
      * a name prefix (`/ctx-evil` vs `/ctx`) from being treated as nested. Kept
-     * pure and side-effect-free so the check is unit-testable without a real
-     * filesystem (vfsStream cannot satisfy realpath()).
+     * pure and side-effect-free, so the check can be tested with paths that do
+     * not exist.
      */
     private function isWithinContext(string $resolvedPath, string $resolvedContext): bool
     {

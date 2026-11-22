@@ -12,6 +12,7 @@ use Nyholm\Psr7\ServerRequest;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Message\ServerRequestInterface;
+use Spatie\TemporaryDirectory\TemporaryDirectory;
 
 /**
  * The shipped rules served from the compiled-data cache (phrases and their
@@ -21,7 +22,8 @@ use Psr\Http\Message\ServerRequestInterface;
  */
 final class CompiledRulesEquivalenceTest extends TestCase
 {
-    private static ?string $cacheDirectory = null;
+    /** One for all tests of the class: compiling the shipped rules takes a moment. */
+    private static ?TemporaryDirectory $cacheDirectory = null;
 
     /** @var array<string, CoreRuleSetMatcher> */
     private static array $matchers = [];
@@ -37,14 +39,7 @@ final class CompiledRulesEquivalenceTest extends TestCase
     {
         self::$matchers = [];
         CompiledDataCache::clearProcessCache();
-        if (self::$cacheDirectory !== null && is_dir(self::$cacheDirectory)) {
-            foreach (glob(self::$cacheDirectory . '/*') ?: [] as $file) {
-                unlink($file);
-            }
-
-            rmdir(self::$cacheDirectory);
-        }
-
+        self::$cacheDirectory?->delete();
         self::$cacheDirectory = null;
     }
 
@@ -60,8 +55,8 @@ final class CompiledRulesEquivalenceTest extends TestCase
 
         $matcher = CoreRuleSetMatcher::fromRuleFiles(ParanoiaLevel::from($paranoiaLevel), null, null, $anomalyThreshold);
         if ($compiled) {
-            self::$cacheDirectory ??= sys_get_temp_dir() . '/phirewall-crs-equivalence-' . bin2hex(random_bytes(6));
-            $compiledDataCache = new CompiledDataCache(self::$cacheDirectory);
+            self::$cacheDirectory ??= TemporaryDirectory::make();
+            $compiledDataCache = new CompiledDataCache(self::$cacheDirectory->path());
             // Build the artifact, then hydrate a second matcher from it as the next request would.
             $builder = CoreRuleSetMatcher::fromRuleFiles(ParanoiaLevel::from($paranoiaLevel), null, null, $anomalyThreshold);
             $builder->useCompiledDataCache($compiledDataCache);
@@ -88,7 +83,7 @@ final class CompiledRulesEquivalenceTest extends TestCase
     {
         $this->matcher(1, 1, true);
         $withPrefilter = 0;
-        foreach (glob(self::$cacheDirectory . '/*.php') ?: [] as $file) {
+        foreach (glob(self::$cacheDirectory?->path() . '/*.php') ?: [] as $file) {
             $withPrefilter += substr_count((string) file_get_contents($file), "'prefilter' => '~");
         }
 

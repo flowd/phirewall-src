@@ -14,11 +14,13 @@ use Flowd\PhirewallPresetOwaspCrs\Engine\Operator\StartsWithEvaluator;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Operator\StringEqualEvaluator;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Operator\UnsupportedOperatorEvaluator;
 use Flowd\PhirewallPresetOwaspCrs\Engine\RuleOutcome;
-use org\bovigo\vfs\vfsStream;
+use Flowd\PhirewallPresetOwaspCrs\Tests\TemporaryFiles;
 use PHPUnit\Framework\TestCase;
 
 final class OperatorEvaluatorTest extends TestCase
 {
+    use TemporaryFiles;
+
     // --- RegexEvaluator ---
     // Subject-length bounding lives in CoreRule (MAX_INSPECTABLE_VALUE_LENGTH), not in the
     // operator: CoreRule fails closed on an oversized value before it reaches an evaluator,
@@ -183,12 +185,11 @@ final class OperatorEvaluatorTest extends TestCase
 
     public function testPhraseMatchFromFileEvaluatorLoadsAndMatches(): void
     {
-        $root = vfsStream::setup('rules');
-        vfsStream::newFile('loads.txt')->at($root)->setContent("admin\nsecret\n");
+        $this->temporaryFile('loads.txt', "admin\nsecret\n");
 
         // Operand relative to the context folder, mirroring how the loader resolves
         // shipped rules; a raw stream-wrapper operand is rejected (see below).
-        $evaluator = new PhraseMatchFromFileEvaluator('loads.txt', $root->url());
+        $evaluator = new PhraseMatchFromFileEvaluator('loads.txt', $this->temporaryPath());
         $this->assertTrue($evaluator->evaluate(['/admin/path']));
         $this->assertFalse($evaluator->evaluate(['/safe']));
     }
@@ -232,52 +233,39 @@ final class OperatorEvaluatorTest extends TestCase
 
     public function testPhraseMatchFromFileEvaluatorUsesContextFolder(): void
     {
-        $root = vfsStream::setup('rules');
-        $subdir = vfsStream::newDirectory('sub')->at($root);
-        vfsStream::newFile('words.txt')->at($subdir)->setContent("blocked\n");
+        $this->temporaryFile('sub/words.txt', "blocked\n");
 
-        $evaluator = new PhraseMatchFromFileEvaluator('words.txt', $root->url() . '/sub');
+        $evaluator = new PhraseMatchFromFileEvaluator('words.txt', $this->temporaryPath('sub'));
         $this->assertTrue($evaluator->evaluate(['/blocked-content']));
     }
 
     public function testPhraseMatchFromFileEvaluatorRejectsAbsoluteOperandWithContextFolder(): void
     {
-        $root = vfsStream::setup('rules');
-        vfsStream::newDirectory('sub')->at($root);
-
-        $evaluator = new PhraseMatchFromFileEvaluator('/etc/passwd', $root->url() . '/sub');
+        $evaluator = new PhraseMatchFromFileEvaluator('/etc/passwd', $this->temporaryDirectory('sub'));
 
         $this->assertSame(RuleOutcome::FailClosed, $evaluator->outcome(['test'])->outcome);
     }
 
     public function testPhraseMatchFromFileEvaluatorRejectsWindowsAbsoluteOperandWithContextFolder(): void
     {
-        $root = vfsStream::setup('rules');
-        vfsStream::newDirectory('sub')->at($root);
-
-        $evaluator = new PhraseMatchFromFileEvaluator('C:\\Windows\\System32\\drivers\\etc\\hosts', $root->url() . '/sub');
+        $evaluator = new PhraseMatchFromFileEvaluator('C:\\Windows\\System32\\drivers\\etc\\hosts', $this->temporaryDirectory('sub'));
 
         $this->assertSame(RuleOutcome::FailClosed, $evaluator->outcome(['test'])->outcome);
     }
 
     public function testPhraseMatchFromFileEvaluatorRejectsUncAbsoluteOperandWithContextFolder(): void
     {
-        $root = vfsStream::setup('rules');
-        vfsStream::newDirectory('sub')->at($root);
-
-        $evaluator = new PhraseMatchFromFileEvaluator('\\\\server\\share\\phrases.txt', $root->url() . '/sub');
+        $evaluator = new PhraseMatchFromFileEvaluator('\\\\server\\share\\phrases.txt', $this->temporaryDirectory('sub'));
 
         $this->assertSame(RuleOutcome::FailClosed, $evaluator->outcome(['test'])->outcome);
     }
 
     public function testPhraseMatchFromFileEvaluatorConfinementRejectsResolvedEscape(): void
     {
-        // The realpath()-based confinement branch in loadPhrases() cannot be
-        // driven through evaluate() under vfsStream (realpath() returns false on
-        // vfs:// streams, so the branch is skipped). The boundary decision the
-        // evaluator owns is therefore verified directly: a relative operand that
-        // resolves (e.g. via a symlink) OUTSIDE the context folder must be
-        // rejected, while one resolving inside is kept.
+        // The boundary decision of the realpath()-based confinement, verified
+        // directly: a relative operand that resolves (e.g. via a symlink)
+        // OUTSIDE the context folder must be rejected, while one resolving
+        // inside is kept.
         $evaluator = new PhraseMatchFromFileEvaluator('words.txt');
         $isWithinContext = new \ReflectionMethod(PhraseMatchFromFileEvaluator::class, 'isWithinContext');
 
@@ -295,11 +283,10 @@ final class OperatorEvaluatorTest extends TestCase
 
     public function testPhraseMatchFromFileEvaluatorSkipsComments(): void
     {
-        $root = vfsStream::setup('rules');
         $content = "# this is a comment\nadmin\n# another comment\n";
-        vfsStream::newFile('comments.txt')->at($root)->setContent($content);
+        $this->temporaryFile('comments.txt', $content);
 
-        $evaluator = new PhraseMatchFromFileEvaluator('comments.txt', $root->url());
+        $evaluator = new PhraseMatchFromFileEvaluator('comments.txt', $this->temporaryPath());
         $this->assertTrue($evaluator->evaluate(['/admin']));
         $this->assertFalse($evaluator->evaluate(['/comment']));
     }
@@ -336,11 +323,9 @@ final class OperatorEvaluatorTest extends TestCase
 
     public function testFactoryPassesContextFolderToPmFromFile(): void
     {
-        $root = vfsStream::setup('rules');
-        $subdir = vfsStream::newDirectory('sub')->at($root);
-        vfsStream::newFile('words.txt')->at($subdir)->setContent("blocked\n");
+        $this->temporaryFile('sub/words.txt', "blocked\n");
 
-        $evaluator = OperatorEvaluatorFactory::create('@pmFromFile', 'words.txt', $root->url() . '/sub');
+        $evaluator = OperatorEvaluatorFactory::create('@pmFromFile', 'words.txt', $this->temporaryPath('sub'));
         $this->assertInstanceOf(PhraseMatchFromFileEvaluator::class, $evaluator);
         $this->assertTrue($evaluator->evaluate(['/blocked-content']));
     }

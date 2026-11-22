@@ -7,16 +7,12 @@ namespace Flowd\PhirewallPresetOwaspCrs\Tests\Unit\Import;
 use Flowd\PhirewallPresetOwaspCrs\Import\Importer;
 use Flowd\PhirewallPresetOwaspCrs\Import\RuleFileTransformer;
 use Flowd\PhirewallPresetOwaspCrs\Manifest;
-use org\bovigo\vfs\vfsStream;
-use org\bovigo\vfs\vfsStreamDirectory;
+use Flowd\PhirewallPresetOwaspCrs\Tests\TemporaryFiles;
 use PHPUnit\Framework\TestCase;
 
 final class ImporterTest extends TestCase
 {
-    private function setUpPackageRoot(): vfsStreamDirectory
-    {
-        return vfsStream::setup('package');
-    }
+    use TemporaryFiles;
 
     /**
      * @return array<string, string>
@@ -42,17 +38,16 @@ final class ImporterTest extends TestCase
 
     public function testWritesPerParanoiaLevelFilesDataFilesAndManifest(): void
     {
-        $root = $this->setUpPackageRoot();
-        $destination = vfsStream::url('package/resources/rules');
+        $destination = $this->temporaryPath('resources/rules');
 
         $importReport = (new Importer())->import($this->sourceFiles(), 'v4.0.0', $destination, '2026-06-12T00:00:00+00:00', 'LICENSE TEXT');
 
-        $this->assertTrue($root->hasChild('resources/rules/REQUEST-942-APPLICATION-ATTACK-SQLI.pl1.conf'));
-        $this->assertTrue($root->hasChild('resources/rules/REQUEST-942-APPLICATION-ATTACK-SQLI.pl2.conf'));
-        $this->assertTrue($root->hasChild('resources/rules/REQUEST-930-APPLICATION-ATTACK-LFI.pl1.conf'));
-        $this->assertTrue($root->hasChild('resources/rules/restricted-files.data'));
-        $this->assertTrue($root->hasChild('resources/rules/manifest.json'));
-        $this->assertTrue($root->hasChild('resources/rules/LICENSE'));
+        $this->assertFileExists($destination . '/REQUEST-942-APPLICATION-ATTACK-SQLI.pl1.conf');
+        $this->assertFileExists($destination . '/REQUEST-942-APPLICATION-ATTACK-SQLI.pl2.conf');
+        $this->assertFileExists($destination . '/REQUEST-930-APPLICATION-ATTACK-LFI.pl1.conf');
+        $this->assertFileExists($destination . '/restricted-files.data');
+        $this->assertFileExists($destination . '/manifest.json');
+        $this->assertFileExists($destination . '/LICENSE');
 
         $this->assertSame('v4.0.0', $importReport->crsVersion);
         $this->assertSame([1 => 2, 2 => 1, 3 => 0, 4 => 0], $importReport->ruleCountsByParanoiaLevel);
@@ -67,8 +62,7 @@ final class ImporterTest extends TestCase
 
     public function testGeneratedRuleFileContainsHeaderAndSingleLineRules(): void
     {
-        $this->setUpPackageRoot();
-        $destination = vfsStream::url('package/resources/rules');
+        $destination = $this->temporaryPath('resources/rules');
 
         (new Importer())->import($this->sourceFiles(), 'v4.0.0', $destination, '2026-06-12T00:00:00+00:00');
 
@@ -82,29 +76,26 @@ final class ImporterTest extends TestCase
 
     public function testWritesNoticeWhenUpstreamShipsOne(): void
     {
-        $root = $this->setUpPackageRoot();
-        $destination = vfsStream::url('package/resources/rules');
+        $destination = $this->temporaryPath('resources/rules');
 
         (new Importer())->import($this->sourceFiles(), 'v4.0.0', $destination, '2026-06-12T00:00:00+00:00', 'LICENSE TEXT', 'NOTICE TEXT');
 
-        $this->assertTrue($root->hasChild('resources/rules/NOTICE'));
+        $this->assertFileExists($destination . '/NOTICE');
         $this->assertSame('NOTICE TEXT', file_get_contents($destination . '/NOTICE'));
     }
 
     public function testNoNoticeFileWhenUpstreamHasNone(): void
     {
-        $root = $this->setUpPackageRoot();
-        $destination = vfsStream::url('package/resources/rules');
+        $destination = $this->temporaryPath('resources/rules');
 
         (new Importer())->import($this->sourceFiles(), 'v4.0.0', $destination, '2026-06-12T00:00:00+00:00', 'LICENSE TEXT');
 
-        $this->assertFalse($root->hasChild('resources/rules/NOTICE'));
+        $this->assertFileDoesNotExist($destination . '/NOTICE');
     }
 
     public function testManifestRoundTripsThroughManifestReader(): void
     {
-        $this->setUpPackageRoot();
-        $destination = vfsStream::url('package/resources/rules');
+        $destination = $this->temporaryPath('resources/rules');
 
         (new Importer())->import($this->sourceFiles(), 'v4.0.0', $destination, '2026-06-12T00:00:00+00:00');
 
@@ -128,42 +119,33 @@ final class ImporterTest extends TestCase
 
     public function testRemovesFilesFromAPreviousImport(): void
     {
-        $root = vfsStream::setup('package', null, [
-            'resources' => [
-                'rules' => [
-                    'REQUEST-999-GONE.pl1.conf' => 'stale',
-                    'gone.data' => 'stale',
-                    'keep.txt' => 'untouched',
-                ],
-            ],
-        ]);
+        $this->temporaryFile('resources/rules/REQUEST-999-GONE.pl1.conf', 'stale');
+        $this->temporaryFile('resources/rules/gone.data', 'stale');
+        $this->temporaryFile('resources/rules/keep.txt', 'untouched');
 
-        $destination = vfsStream::url('package/resources/rules');
+        $destination = $this->temporaryPath('resources/rules');
         (new Importer())->import($this->sourceFiles(), 'v4.0.0', $destination, '2026-06-12T00:00:00+00:00');
 
-        $this->assertFalse($root->hasChild('resources/rules/REQUEST-999-GONE.pl1.conf'));
-        $this->assertFalse($root->hasChild('resources/rules/gone.data'));
-        $this->assertTrue($root->hasChild('resources/rules/keep.txt'));
+        $this->assertFileDoesNotExist($destination . '/REQUEST-999-GONE.pl1.conf');
+        $this->assertFileDoesNotExist($destination . '/gone.data');
+        $this->assertFileExists($destination . '/keep.txt');
     }
 
     public function testFailsWhenAReferencedDataFileIsMissing(): void
     {
-        $this->setUpPackageRoot();
         $sourceFiles = ['rules/REQUEST-930-APPLICATION-ATTACK-LFI.conf' => 'SecRule REQUEST_FILENAME "@pmFromFile missing.data" "id:930130,block"'];
 
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('missing.data');
 
-        (new Importer())->import($sourceFiles, 'v4.0.0', vfsStream::url('package/resources/rules'), '2026-06-12T00:00:00+00:00');
+        (new Importer())->import($sourceFiles, 'v4.0.0', $this->temporaryPath('resources/rules'), '2026-06-12T00:00:00+00:00');
     }
 
     public function testFailsWhenNoRuleFilesAreFound(): void
     {
-        $this->setUpPackageRoot();
-
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('No REQUEST-*.conf rule files');
 
-        (new Importer())->import(['rules/README.md' => 'x'], 'v4.0.0', vfsStream::url('package/resources/rules'), '2026-06-12T00:00:00+00:00');
+        (new Importer())->import(['rules/README.md' => 'x'], 'v4.0.0', $this->temporaryPath('resources/rules'), '2026-06-12T00:00:00+00:00');
     }
 }

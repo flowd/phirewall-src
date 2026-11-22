@@ -8,12 +8,14 @@ use Flowd\PhirewallPresetOwaspCrs\Engine\CoreRule;
 use Flowd\PhirewallPresetOwaspCrs\Engine\CoreRuleSet;
 use Flowd\PhirewallPresetOwaspCrs\Engine\CoreRuleSetMatcher;
 use Flowd\PhirewallPresetOwaspCrs\ParanoiaLevel;
+use Flowd\PhirewallPresetOwaspCrs\Tests\TemporaryFiles;
 use Nyholm\Psr7\ServerRequest;
-use org\bovigo\vfs\vfsStream;
 use PHPUnit\Framework\TestCase;
 
 final class CoreRuleSetCrsExclusionTest extends TestCase
 {
+    use TemporaryFiles;
+
     /**
      * @param array{tags?: list<string>} $extra
      */
@@ -169,13 +171,10 @@ final class CoreRuleSetCrsExclusionTest extends TestCase
 
     public function testMatcherAppliesRuleExclusionsFromFile(): void
     {
-        $root = vfsStream::setup('exclusions');
-        $file = vfsStream::newFile('crs-exclusions.conf')
-            ->withContent('SecRuleRemoveById 400021' . "\n")
-            ->at($root);
+        $file = $this->temporaryFile('crs-exclusions.conf', 'SecRuleRemoveById 400021' . "\n");
 
         $matcher = new CoreRuleSetMatcher(new CoreRuleSet([$this->argsRule(400021)]));
-        $matcher->applyRuleExclusionsFromFile($file->url());
+        $matcher->applyRuleExclusionsFromFile($file);
 
         $request = (new ServerRequest('GET', '/'))->withQueryParams(['q' => 'suspicious']);
         $this->assertFalse($matcher->match($request)->isMatch());
@@ -188,18 +187,15 @@ final class CoreRuleSetCrsExclusionTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Rule exclusion file not found');
 
-        $matcher->applyRuleExclusionsFromFile(vfsStream::setup('empty')->url() . '/missing.conf');
+        $matcher->applyRuleExclusionsFromFile($this->temporaryPath('missing.conf'));
     }
 
     public function testRuleSetAppliesRuleExclusionsFromFile(): void
     {
-        $root = vfsStream::setup('exclusions');
-        $file = vfsStream::newFile('crs-exclusions.conf')
-            ->withContent('SecRuleRemoveById 400022' . "\n")
-            ->at($root);
+        $file = $this->temporaryFile('crs-exclusions.conf', 'SecRuleRemoveById 400022' . "\n");
 
         $coreRuleSet = new CoreRuleSet([$this->argsRule(400022)]);
-        $coreRuleSet->applyRuleExclusionsFromFile($file->url());
+        $coreRuleSet->applyRuleExclusionsFromFile($file);
 
         $request = (new ServerRequest('GET', '/'))->withQueryParams(['q' => 'suspicious']);
         $this->assertFalse($coreRuleSet->evaluate($request)->isBlocked());
@@ -207,27 +203,35 @@ final class CoreRuleSetCrsExclusionTest extends TestCase
 
     public function testUnreadableRuleExclusionFileIsRejectedByTheRuleSet(): void
     {
-        $root = vfsStream::setup('exclusions');
-        $file = vfsStream::newFile('crs-exclusions.conf', 0o000)
-            ->withContent('SecRuleRemoveById 400023')
-            ->at($root);
+        $file = $this->unreadableFile('SecRuleRemoveById 400023');
 
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('Cannot read rule exclusion file');
 
-        (new CoreRuleSet())->applyRuleExclusionsFromFile($file->url());
+        (new CoreRuleSet())->applyRuleExclusionsFromFile($file);
     }
 
     public function testUnreadableRuleExclusionFileIsRejectedByTheMatcher(): void
     {
-        $root = vfsStream::setup('exclusions');
-        $file = vfsStream::newFile('crs-exclusions.conf', 0o000)
-            ->withContent('SecRuleRemoveById 400024')
-            ->at($root);
+        $file = $this->unreadableFile('SecRuleRemoveById 400024');
 
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('Cannot read rule exclusion file');
 
-        (new CoreRuleSetMatcher(new CoreRuleSet()))->applyRuleExclusionsFromFile($file->url());
+        (new CoreRuleSetMatcher(new CoreRuleSet()))->applyRuleExclusionsFromFile($file);
+    }
+
+    /**
+     * A rule exclusion file that is there but may not be read.
+     */
+    private function unreadableFile(string $content): string
+    {
+        $file = $this->temporaryFile('crs-exclusions.conf', $content);
+        chmod($file, 0);
+        if (is_readable($file)) {
+            $this->markTestSkipped('This user reads every file, whatever its permissions (root).');
+        }
+
+        return $file;
     }
 }

@@ -7,16 +7,17 @@ namespace Flowd\Phirewall\Tests\Config;
 use Flowd\Phirewall\Config;
 use Flowd\Phirewall\Config\FileIpBlocklistMatcher;
 use Flowd\Phirewall\Config\FileIpBlocklistStore;
+use Flowd\Phirewall\Tests\Support\TemporaryFiles;
 use Nyholm\Psr7\ServerRequest;
-use org\bovigo\vfs\vfsStream;
 use PHPUnit\Framework\TestCase;
 
 final class FileIpBlocklistTest extends TestCase
 {
+    use TemporaryFiles;
+
     public function testStoreCreatesFileAndMatcherBlocksAppendedIp(): void
     {
-        vfsStream::setup('blocklist', 0700);
-        $file = vfsStream::url('blocklist/list.txt');
+        $file = $this->temporaryPath('list.txt');
 
         $config = new Config(new \Flowd\Phirewall\Store\InMemoryCache());
         $fileIpBlocklistStore = $config->blocklists->fileIp('file-blocklist', $file);
@@ -34,8 +35,7 @@ final class FileIpBlocklistTest extends TestCase
 
     public function testStoreIsIdempotentAndSkipsComments(): void
     {
-        vfsStream::setup('blocklist', 0700);
-        $file = vfsStream::url('blocklist/list.txt');
+        $file = $this->temporaryPath('list.txt');
 
         $now = 1_700_000_000;
         $fileIpBlocklistStore = new FileIpBlocklistStore($file, now: static function () use (&$now): int {
@@ -49,8 +49,7 @@ final class FileIpBlocklistTest extends TestCase
 
     public function testStoreRejectsEntryWithEmbeddedNewline(): void
     {
-        vfsStream::setup('blocklist', 0700);
-        $file = vfsStream::url('blocklist/list.txt');
+        $file = $this->temporaryPath('list.txt');
 
         $now = 1_700_000_000;
         $fileIpBlocklistStore = new FileIpBlocklistStore($file, now: static fn(): int => $now);
@@ -65,8 +64,7 @@ final class FileIpBlocklistTest extends TestCase
 
     public function testStoreWritesValidIpAndCidrEntriesAndSkipsInvalid(): void
     {
-        vfsStream::setup('blocklist', 0700);
-        $file = vfsStream::url('blocklist/list.txt');
+        $file = $this->temporaryPath('list.txt');
 
         $now = 1_700_000_000;
         $fileIpBlocklistStore = new FileIpBlocklistStore($file, now: static fn(): int => $now);
@@ -81,8 +79,7 @@ final class FileIpBlocklistTest extends TestCase
 
     public function testTtlExpiryPrunedAndMatcherSkipsExpiredEntries(): void
     {
-        vfsStream::setup('blocklist', 0700);
-        $file = vfsStream::url('blocklist/list.txt');
+        $file = $this->temporaryPath('list.txt');
 
         $now = 1_700_000_000;
         $fileIpBlocklistStore = new FileIpBlocklistStore($file, now: static function () use (&$now): int {
@@ -104,8 +101,7 @@ final class FileIpBlocklistTest extends TestCase
 
     public function testRewriteThrottlingAppendsWithinWindowAndRewritesAfterWindow(): void
     {
-        $root = vfsStream::setup('blocklist', 0700);
-        $file = vfsStream::url('blocklist/list.txt');
+        $file = $this->temporaryPath('list.txt');
 
         $now = 1_700_000_000;
         $fileIpBlocklistStore = new FileIpBlocklistStore($file, now: static function () use (&$now): int {
@@ -127,8 +123,8 @@ final class FileIpBlocklistTest extends TestCase
         $this->assertSame($expected, file_get_contents($file));
 
         // The full-rewrite path swaps a temp file in via rename; none may linger.
-        foreach ($root->getChildren() as $vfsStreamContent) {
-            $this->assertStringNotContainsString('.tmp.', $vfsStreamContent->getName(), 'Atomic rewrite must not leave a temp file behind');
+        foreach ($this->entriesIn($this->temporaryPath()) as $entry) {
+            $this->assertStringNotContainsString('.tmp.', basename($entry), 'Atomic rewrite must not leave a temp file behind');
         }
     }
 
@@ -138,16 +134,15 @@ final class FileIpBlocklistTest extends TestCase
      */
     public function testStoreCreatesMissingDirectoryWithOwnerOnlyPermissions(): void
     {
-        $root = vfsStream::setup('blocklist', 0700);
-        $file = vfsStream::url('blocklist/nested/deep/list.txt');
+        $file = $this->temporaryPath('nested/deep/list.txt');
 
         $now = 1_700_000_000;
         $fileIpBlocklistStore = new FileIpBlocklistStore($file, now: static fn(): int => $now);
 
         $fileIpBlocklistStore->add('203.0.113.10');
 
-        $this->assertTrue($root->hasChild('nested/deep'));
-        $this->assertSame(0700, $root->getChild('nested/deep')->getPermissions());
+        $this->assertDirectoryExists($this->temporaryPath('nested/deep'));
+        $this->assertSame(0700, fileperms($this->temporaryPath('nested/deep')) & 0777);
     }
 
     /**
@@ -158,19 +153,23 @@ final class FileIpBlocklistTest extends TestCase
      */
     public function testFailedRewriteKeepsPreviousEntriesIntact(): void
     {
-        $root = vfsStream::setup('blocklist', 0700);
-        $file = vfsStream::url('blocklist/list.txt');
+        $file = $this->temporaryPath('list.txt');
 
         // A live entry plus an expired one; pruning the expired entry forces a rewrite.
         $original = "203.0.113.10||1700000000\n5.6.7.8|1700000050|1700000000\n";
-        file_put_contents($file, $original);
+        $this->temporaryFile('list.txt', $original);
 
         $now = 1_700_000_200; // past the expiry and outside the rewrite-throttle window
         $fileIpBlocklistStore = new FileIpBlocklistStore($file, now: static fn(): int => $now);
 
         // Read-only directory: the existing file can still be opened for writing,
         // but the sibling temp file cannot be created, so the rename never happens.
-        $root->chmod(0500);
+        $directory = $this->temporaryPath();
+        chmod($directory, 0500);
+        if (is_writable($directory)) {
+            chmod($directory, 0700);
+            $this->markTestSkipped('This user writes to every directory, whatever its permissions (root).');
+        }
 
         $thrown = null;
         try {
@@ -178,7 +177,7 @@ final class FileIpBlocklistTest extends TestCase
         } catch (\RuntimeException $runtimeException) {
             $thrown = $runtimeException;
         } finally {
-            $root->chmod(0700);
+            chmod($directory, 0700);
         }
 
         $this->assertInstanceOf(\RuntimeException::class, $thrown, 'A failed atomic write must surface as a RuntimeException');
@@ -193,16 +192,15 @@ final class FileIpBlocklistTest extends TestCase
      */
     public function testWritersSerializeOnSidecarLockFileAndPreserveContent(): void
     {
-        $root = vfsStream::setup('blocklist', 0700);
-        $file = vfsStream::url('blocklist/list.txt');
+        $file = $this->temporaryPath('list.txt');
 
         $now = 1_700_000_000;
         $fileIpBlocklistStore = new FileIpBlocklistStore($file, now: static fn(): int => $now);
 
         $fileIpBlocklistStore->add('203.0.113.10');
 
-        $this->assertTrue(
-            $root->hasChild('list.txt.lock'),
+        $this->assertFileExists(
+            $file . '.lock',
             'A sidecar .lock file must be created so the lock survives the rename that swaps the live inode'
         );
         $this->assertStringContainsString('203.0.113.10', (string) file_get_contents($file));

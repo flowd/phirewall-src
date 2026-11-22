@@ -9,18 +9,18 @@ use Flowd\Phirewall\Http\Firewall;
 use Flowd\Phirewall\Http\Outcome;
 use Flowd\Phirewall\Store\InMemoryCache;
 use Flowd\PhirewallPresetBadIps\Presets;
+use Flowd\PhirewallPresetBadIps\Tests\TemporaryFiles;
 use Nyholm\Psr7\ServerRequest;
-use org\bovigo\vfs\vfsStream;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Message\ServerRequestInterface;
 
 final class PresetsTest extends TestCase
 {
+    use TemporaryFiles;
+
     private function dataFileWith(string $contents): string
     {
-        $root = vfsStream::setup('resources', null, ['bad-ips.data' => $contents]);
-
-        return $root->url() . '/bad-ips.data';
+        return $this->temporaryFile('bad-ips.data', $contents);
     }
 
     public function testBlocklistBlocksAListedIpAndPassesOthers(): void
@@ -59,18 +59,16 @@ final class PresetsTest extends TestCase
 
     public function testSnapshotImportedAtReadsTheManifest(): void
     {
-        $root = vfsStream::setup('resources', null, [
-            'manifest.json' => json_encode([
+        $this->temporaryFile('manifest.json', (string) json_encode([
                 'feedName' => 'stamparm/ipsum',
                 'feedUrl' => 'https://github.com/stamparm/ipsum',
                 'feedLevel' => '3',
                 'license' => 'The Unlicense (public domain)',
                 'ipCount' => 1,
                 'importedAt' => '2026-06-13T12:00:00+00:00',
-            ], JSON_THROW_ON_ERROR),
-        ]);
+        ], JSON_THROW_ON_ERROR));
 
-        $this->assertSame('2026-06-13T12:00:00+00:00', Presets::snapshotImportedAt($root->url()));
+        $this->assertSame('2026-06-13T12:00:00+00:00', Presets::snapshotImportedAt($this->temporaryPath()));
     }
 
     private function requestFrom(string $ip): ServerRequestInterface
