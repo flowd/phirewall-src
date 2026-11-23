@@ -491,7 +491,7 @@ may now match, and vice versa). Rule updates are always recorded in
 `CHANGELOG.md`, so review it before upgrading. `Presets::crsVersion()` reports
 the bundled upstream release tag.
 
-Supported PHP versions: `>=8.2`, tested on 8.2, 8.3, 8.4 and 8.5. Security fixes
+Supported PHP versions: `>=8.2`, tested on 8.2, 8.3, 8.4, 8.5 and 8.6. Security fixes
 are provided for the latest minor release only (see `SECURITY.md`).
 
 ## License

@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`Flowd\Phirewall\Support\IpLookupTable`.** A list of IP addresses and networks prepared for lookups: single addresses by their binary form, networks by address family, prefix length and prefix. `contains()` costs one array access for the address and one per prefix length in use, whatever the size of the list. `toArray()` / `fromArray()` give and take plain data for a `CompiledDataCache`, so a matcher for a long list from a file (a threat feed) can load a ready table instead of compiling the list on every request; the bad-IP preset does. Entries compare as in `IpMatcher`: IPv4 written as IPv6 (`::ffff:a.b.c.d`) is IPv4 on both sides, and entries that are neither an address nor a network are left out.
 - **`CompiledDataCache::forget()`.** Drops what the cache keeps for one identifier, in the process and in the directory, so the next `load()` builds it again. For data that is out of date although no source file has a newer modification time, like a file replaced by one of the same time; the bad-IP preset uses it when its artifact was made from a snapshot of another size.
+- Tested on PHP 8.6.
 
 ### Changed
 

@@ -9,6 +9,10 @@ Releases up to 0.11.0 were made before this file existed.
 
 ## Unreleased
 
+### Added
+
+- Tested on PHP 8.6.
+
 ### Changed
 
 - **The snapshot is loaded as a ready lookup table.** With a compiled-data cache, the preset costs about 0.05 ms per request under PHP-FPM instead of 0.6 ms (PHP 8.5, OPcache, local disk). The cache file now holds the lookup table itself; before, it held the address list, which was copied and hashed on every request to find a second cache file with the table. Decisions are unchanged. The table is an `IpLookupTable` of `flowd/phirewall`, which is new in 0.12. The cache file has a new name (`bad-ips-v2-...`); the files of earlier versions (`bad-ips-v1-...` and the `ip-matcher-...` file of the list) are not read any more and can be deleted with the rest of the cache directory.

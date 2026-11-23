@@ -16,7 +16,7 @@ See the [README](README.md#development) for the individual commands.
 
 - Branch off `main` and open the pull request against `main`.
 - Keep a change inside one package where possible. A change of the core that affects the extensions
-  needs the extensions to keep passing: CI runs all packages on PHP 8.2 to 8.5.
+  needs the extensions to keep passing: CI runs all packages on PHP 8.2 to 8.6.
 - Run `composer fix` before you push, `composer test` has to pass.
 - Add a line under `## Unreleased` in the `CHANGELOG.md` of the package for user-visible changes.
   (`flowd/phirewall` has no such section yet, add one on top when you need it.)
