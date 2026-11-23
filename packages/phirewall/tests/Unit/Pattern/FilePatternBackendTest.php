@@ -120,6 +120,39 @@ final class FilePatternBackendTest extends TestCase
     }
 
     /**
+     * A file given by its bare name has no directory the backend looks at
+     * first, so the pattern file stays the file PHP asked about last from one
+     * request of a long-running worker to the next.
+     */
+    public function testAFileGivenByItsBareNameIsReparsedAfterAnotherProcessReplacedIt(): void
+    {
+        $this->temporaryFile('patterns.txt', PatternKind::IP->value . "|203.0.113.10|||1700000000\n", 1_700_000_000);
+        $workingDirectory = (string) getcwd();
+        chdir($this->temporaryPath());
+        try {
+            $filePatternBackend = new FilePatternBackend('patterns.txt', now: static fn(): int => 1_700_000_000);
+            // Twice: the first call loads classes, which makes PHP forget the file.
+            $filePatternBackend->consume();
+            $first = $filePatternBackend->consume();
+
+            $this->replaceFromAnotherProcess(
+                $this->temporaryPath('patterns.txt'),
+                PatternKind::IP->value . "|203.0.113.11|||1700000000\n",
+                1_700_000_005,
+            );
+
+            $second = $filePatternBackend->consume();
+        } finally {
+            chdir($workingDirectory);
+        }
+
+        $this->assertCount(1, $first->entries);
+        $this->assertSame('203.0.113.10', $first->entries[0]->value);
+        $this->assertSame('203.0.113.11', $second->entries[0]->value);
+        $this->assertSame(1_700_000_005, $second->version);
+    }
+
+    /**
      * When an entry expires on an otherwise-unchanged file, the reuse gate
      * must break at the entry's expiry so the expired pattern stops being surfaced
      * (and the version changes so version-keyed consumers, e.g. the compiled
@@ -266,6 +299,7 @@ final class FilePatternBackendTest extends TestCase
         }
 
         $this->assertInstanceOf(\RuntimeException::class, $thrown, 'A failed atomic write must surface as a RuntimeException');
+        $this->assertStringContainsString('Failed to write temp pattern file', $thrown->getMessage());
         $this->assertSame($original, file_get_contents($file), 'A failed atomic write must not corrupt or empty the live file');
     }
 
