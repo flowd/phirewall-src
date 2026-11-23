@@ -42,6 +42,27 @@ final class FileIpBlocklistMatcherTest extends TestCase
         $this->assertTrue($stillBlocked->isMatch());
     }
 
+    public function testAWorkerThatAskedAboutTheListLastPicksUpAChange(): void
+    {
+        $path = $this->temporaryFile('blocklist.txt', "192.0.2.1\n", 1_000_000);
+        $fileIpBlocklistMatcher = new FileIpBlocklistMatcher($path, null, 0);
+        $blocked = new ServerRequest('GET', '/', [], null, '1.1', ['REMOTE_ADDR' => '192.0.2.1']);
+        $added = new ServerRequest('GET', '/', [], null, '1.1', ['REMOTE_ADDR' => '203.0.113.7']);
+        // Twice: the first match loads classes, which makes PHP forget the file.
+        $fileIpBlocklistMatcher->match($blocked);
+        $before = $fileIpBlocklistMatcher->match($blocked)->isMatch();
+
+        // Replaced by another process, as a list is: PHP still remembers the old
+        // time, and the matcher must not rely on that.
+        $this->replaceFromAnotherProcess($path, "203.0.113.7\n", 1_000_100);
+
+        $after = $fileIpBlocklistMatcher->match($added)->isMatch();
+
+        $this->assertTrue($before);
+        $this->assertTrue($after);
+        $this->assertFalse($fileIpBlocklistMatcher->match($blocked)->isMatch());
+    }
+
     public function testReloadIsThrottledByMinReloadInterval(): void
     {
         $path = $this->temporaryFile('blocklist.txt', "1.2.3.4\n");

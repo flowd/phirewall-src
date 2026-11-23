@@ -158,6 +158,9 @@ final class FileIpBlocklistTest extends TestCase
         // A live entry plus an expired one; pruning the expired entry forces a rewrite.
         $original = "203.0.113.10||1700000000\n5.6.7.8|1700000050|1700000000\n";
         $this->temporaryFile('list.txt', $original);
+        // The lock file of an earlier write. Without it the store would already
+        // fail to create that one, before it gets to the rewrite.
+        $this->temporaryFile('list.txt.lock', '');
 
         $now = 1_700_000_200; // past the expiry and outside the rewrite-throttle window
         $fileIpBlocklistStore = new FileIpBlocklistStore($file, now: static fn(): int => $now);
@@ -181,6 +184,7 @@ final class FileIpBlocklistTest extends TestCase
         }
 
         $this->assertInstanceOf(\RuntimeException::class, $thrown, 'A failed atomic write must surface as a RuntimeException');
+        $this->assertStringContainsString('Failed to write temp blocklist file', $thrown->getMessage());
         $this->assertSame($original, file_get_contents($file), 'A failed atomic write must not corrupt or empty the live blocklist');
     }
 
