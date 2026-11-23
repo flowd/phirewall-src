@@ -9,6 +9,10 @@ Releases up to 0.11.0 were made before this file existed.
 
 ## Unreleased
 
+### Added
+
+- Tested on PHP 8.6.
+
 ### Changed
 
 - Require `flowd/phirewall` `>=0.12 <1.0` (was `>=0.11 <1.0`). The packages of this repository share one constraint on the core, and the bad-IP preset needs 0.12.

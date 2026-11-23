@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- Tested on PHP 8.6.
+
 ### Changed
 
 - **Less work per request.** With a compiled-data cache, a request through paranoia level 1 under PHP-FPM costs about 0.9 ms instead of 4.2 ms, and a form post in a long-running worker about 0.3 ms instead of 1.4 ms (PHP 8.5, OPcache, local disk). Each phrase list (`@pm`, `@pmFromFile`) comes with a prefilter, one expression that tells in a single pass whether a value contains any of its phrases; only a value it does not rule out is searched phrase by phrase, so what a rule finds is unchanged. Rules with the same targets share what they collect from a request, and parsed selectors and exclusions are reused.
