@@ -110,7 +110,7 @@ bin/release minor --dry-run   # which packages changed since the last tag, which
 bin/release minor             # or: patch | X.Y.Z
 ```
 
-`bin/release` must run on an up-to-date, clean `main` and needs `vendor/` (`composer install`) and `gh`. It
+`bin/release` must run on an up-to-date, clean `main` (or maintenance branch, see below) and needs `vendor/` (`composer install`) and `gh`. It
 creates `release/X.Y.Z` with one commit that
 
 - sets the constraint between the packages to `>=X.Y <1.0` (`<2.0` from 1.0.0 on, with `bin/release 1.0.0`),
@@ -124,8 +124,9 @@ only). `bin/release --no-push` stops after the commit. The first release needs a
 
 Merging the pull request (any merge method) runs `.github/workflows/release.yml`:
 
-1. finds the pull request of the pushed commit: it must be merged into `main`, have the pushed commit as its
-   merge commit and come from a `release/X.Y.Z` branch of this repository. A pull request from a fork never
+1. finds the pull request of the pushed commit: it must be merged into the pushed branch (`main` or a
+   maintenance branch), have the pushed commit as its merge commit and come from a `release/X.Y.Z` branch
+   of this repository. A pull request from a fork never
    releases, whatever its branch is called, and neither does a commit message on its own,
 2. checks that the `dev-main` branch alias of all packages is `X.(Y+1).x-dev`, as `bin/release` sets it, and
    tags the merge commit `X.Y.Z`,
@@ -138,6 +139,18 @@ released versions but no `dev-main`.
 **Constraints between the packages.** The extensions require the core as `>=X.Y <1.0`. A release raises the
 lower bound to the released minor, so every release of an extension needs the core of the same minor.
 `monorepo-builder validate` (part of `composer test`) enforces consistent constraints.
+
+**Maintenance releases.** Once `main` holds changes for the next minor, a patch of the released line is made
+from a maintenance branch named after the line: `0.11` for `0.11.1`, `0.11.2`, ... Create it from the last
+release of the line (or the last commit that still belongs in a patch), merge the fixes into it by pull
+request, then run `bin/release patch` on that branch: it continues the tags of the line, keeps the constraint
+`>=X.Y <1.0`, and opens the release pull request into the maintenance branch. Merging it releases as on
+`main`; the workflow refuses any version that is not a patch of the branch's line. Do not release a patch of
+an older line from `main`: its packages may need a newer core than the constraint of that line allows.
+Afterwards, merge the maintenance branch into `main`, so `main` has the fixes and the changelog section of
+the patch. The mirrors have one branch: each release adds its snapshot commit there and tags it, so after a
+patch of an older line the mirror's branch shows that patch until the next release from `main`. The tags,
+which are what Packagist reads, are not affected.
 
 **If the split fails half way.** The four jobs are independent. A job pushes the snapshot commit, then the
 tag. If a job fails after the push, "Re-run failed jobs" fails again with `tag already exists` in that

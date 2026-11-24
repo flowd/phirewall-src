@@ -85,6 +85,8 @@ Everything `PortableConfig` can express today.
 | `filterKnownScanners(patterns = null)` | the User-Agent matches a known scanner; `null` uses the curated default list, backed by `KnownScannerMatcher` |
 | `filterSuspiciousHeaders(requiredHeaders = null)` | a required browser header is missing; `null` uses the default set, backed by `SuspiciousHeadersMatcher` |
 
+The path filters match the **normalised** path: percent-decoded once, dot-segments resolved, duplicate slashes collapsed. Exact and prefix values are normalised too, so `'/my%20file'` and `'/my file'` are the same rule. In a safelist, a path filter never matches an ambiguous path (dot-segments, encoded slashes, ...). See [Path Normalisation](/features/safelists-blocklists#path-normalisation).
+
 `filterIp`, `filterKnownScanners`, and `filterSuspiciousHeaders` compile to the dedicated matcher classes (so you get their diagnostics and CIDR handling); the remaining filters compile to a request-predicate closure.
 
 ::: warning
@@ -97,7 +99,7 @@ Everything `PortableConfig` can express today.
 |---------|---------|
 | `keyIp()` | client IP resolved via the Config's IP resolver (else `REMOTE_ADDR`), like keyless rules and `filterIp()` |
 | `keyMethod()` | HTTP method |
-| `keyPath()` | request path |
+| `keyPath()` | normalised request path (`/login`, `/%6cogin` and `/./login` share one counter) |
 | `keyHeader(name)` | raw value of header `name` |
 | `keyHashedHeader(name)` | sha256 fingerprint of header `name`, preferred for credential-bearing headers (`Authorization`, `Cookie`, `X-Api-Key`) so the raw value never reaches the cache/ban registry |
 
@@ -123,6 +125,8 @@ Pattern backends carry a list of entries; each entry has a `PatternKind`:
 | `PatternKind::HEADER_EXACT` | named header equals value (entry `target` = header name) |
 | `PatternKind::HEADER_REGEX` | named header matches PCRE pattern (entry `target` = header name) |
 | `PatternKind::REQUEST_REGEX` | pattern over path + query + headers |
+
+Path kinds (and the path part of `REQUEST_REGEX`) match the normalised path, or the raw path as written; see [Path Normalisation](/features/safelists-blocklists#path-normalisation).
 
 `patternEntry()` also accepts optional `target`, `expiresAt`, `addedAt`, and a scalar `metadata` map, all of which round-trip as data, so an entry can carry its own expiry and provenance (handy when the catalogue lives in a database).
 
