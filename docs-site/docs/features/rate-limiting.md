@@ -231,7 +231,7 @@ Phirewall ships with common key extractors for typical rate limiting scenarios:
 | `KeyExtractors::header('X-User-Id')` | Raw value of a specific header | `?string` |
 | `KeyExtractors::hashedHeader('X-Api-Key')` | sha256 fingerprint of a header value; preferred for credential-bearing headers (raw value never stored/emitted) | `?string` |
 | `KeyExtractors::method()` | HTTP method (uppercase) | `?string` |
-| `KeyExtractors::path()` | Request path (always returns a value, never skips) | `string` |
+| `KeyExtractors::path()` | Normalised request path (always returns a value, never skips; `/login`, `/%6cogin` and `/./login` share one counter, see [Path Normalisation](/features/safelists-blocklists#path-normalisation)) | `string` |
 | `KeyExtractors::userAgent()` | User-Agent header value | `?string` |
 
 The client IP is the default key when `key:` is omitted - no extractor needed. Set proxy trust once with `$config->setIpResolver((new TrustedProxyResolver([...]))->resolve(...))` and all keyless rules key on the resolved client IP automatically.

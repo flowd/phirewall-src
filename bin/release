@@ -7,6 +7,10 @@
 # request. Merging that pull request into main triggers .github/workflows/release.yml,
 # which tags the merge commit, publishes the mirrors and creates the GitHub release.
 #
+# Releases are made from main. A maintenance branch X.Y (e.g. 0.11) releases the patches of
+# its line while main has moved on: there, only "patch" or an explicit X.Y.Z of that line
+# is accepted, and the pull request goes into the maintenance branch.
+#
 # Usage:
 #   bin/release <patch|minor|major|X.Y.Z> [--dry-run] [--no-push]
 #
@@ -101,23 +105,40 @@ problem() {
 }
 
 branch="$(git rev-parse --abbrev-ref HEAD)"
-[[ "$branch" == "main" ]] || problem "releases are made from main, you are on '$branch'"
+# The branch the release is made from and merged into: main, or a maintenance branch X.Y.
+BASE_BRANCH="main"
+LINE=""
+if [[ "$branch" =~ ^[0-9]+\.[0-9]+$ ]]; then
+    BASE_BRANCH="$branch"
+    LINE="$branch"
+elif [[ "$branch" != "main" ]]; then
+    problem "releases are made from main or a maintenance branch (X.Y), you are on '$branch'"
+fi
 
 [[ -z "$(git status --porcelain)" ]] || problem "the working tree is not clean"
 
-git fetch --quiet origin main --tags || problem "could not fetch origin"
-if git rev-parse --verify --quiet origin/main >/dev/null; then
-    [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] \
-        || problem "main is not in sync with origin/main"
+git fetch --quiet origin "$BASE_BRANCH" --tags || problem "could not fetch origin"
+if git rev-parse --verify --quiet "origin/${BASE_BRANCH}" >/dev/null; then
+    [[ "$(git rev-parse HEAD)" == "$(git rev-parse "origin/${BASE_BRANCH}")" ]] \
+        || problem "${branch} is not in sync with origin/${BASE_BRANCH}"
 fi
 
 # --- versions ----------------------------------------------------------------------------
 
 # Only shared tags (X.Y.Z). The imported history tags carry a package prefix (core/0.10.0).
 LAST_TAG="$(git tag --list '[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)"
+if [[ -n "$LINE" ]]; then
+    # A maintenance branch continues its own line, whatever main has released since.
+    LAST_TAG="$(git tag --list "${LINE}.[0-9]*" --sort=-v:refname | head -n 1)"
+    [[ -n "$LAST_TAG" ]] || die "the maintenance branch ${LINE} has no release of its line to continue"
+    [[ "$BUMP" == "patch" || "$BUMP" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+        || die "the maintenance branch ${LINE} only releases patches: use 'patch' or ${LINE}.Z"
+fi
 
 if [[ "$BUMP" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     VERSION="$BUMP"
+    [[ -z "$LINE" || "$VERSION" == "${LINE}."* ]] \
+        || die "$VERSION does not belong to the maintenance branch ${LINE}"
 else
     [[ "$BUMP" =~ ^(patch|minor|major)$ ]] || die "'$BUMP' is neither patch, minor, major nor X.Y.Z"
     [[ -n "$LAST_TAG" ]] || die "there is no shared tag yet, pass the first version explicitly (e.g. 0.11.0)"
@@ -181,7 +202,7 @@ echo
 
 info "Constraint between the packages: ${CONSTRAINT}"
 info "Branch alias of dev-main after the release: ${NEXT_ALIAS}"
-info "Release branch: ${RELEASE_BRANCH}"
+info "Release branch: ${RELEASE_BRANCH}, to be merged into ${BASE_BRANCH}"
 
 if (( DRY_RUN )); then
     echo
@@ -256,7 +277,7 @@ Merging this pull request tags the merge commit \`${VERSION}\`, publishes the mi
 repositories and creates the GitHub release.
 EOF
 
-gh pr create --base main --head "$RELEASE_BRANCH" --title "Release ${VERSION}" --body-file "$body"
+gh pr create --base "$BASE_BRANCH" --head "$RELEASE_BRANCH" --title "Release ${VERSION}" --body-file "$body"
 rm -f "$body"
 
 echo
