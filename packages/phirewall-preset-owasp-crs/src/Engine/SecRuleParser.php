@@ -349,9 +349,12 @@ final class SecRuleParser
                 continue;
             }
 
-            $disruptiveAction = $this->disruptiveActionName($part) ?? $disruptiveAction;
-
             $kv = explode(':', $part, 2);
+            $actionName = strtolower(trim($kv[0]));
+            if (in_array($actionName, self::DISRUPTIVE_ACTIONS, true)) {
+                $disruptiveAction = $actionName;
+            }
+
             if (count($kv) === 1) {
                 $actions[$kv[0]] = true;
             } else {
