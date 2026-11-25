@@ -589,6 +589,14 @@ $manualOverrides = [
     // Cookie named "$Version" with value "1"; the auto 'cookie' vector uses a fixed name,
     // so a named-cookie vector is needed for this name-pattern selector.
     921250 => ['vector' => 'cookie:$Version', 'payload' => '1'],
+    // UTF-7 "+ADw-": the rule decodes its values, which turns a literal "+" into a
+    // space, so the plus sign has to arrive encoded (as in the CRS regression test).
+    941350 => ['vector' => 'args', 'payload' => '%2bADw-script%2bAD4-'],
+    // A line break and a "|" cannot be written into a PSR-7 path; encoded they
+    // reach the rule, which decodes its values.
+    921190 => ['vector' => 'filename', 'payload' => 'a%0ab'],
+    921240 => ['vector' => 'uri', 'payload' => 'unix:/run/socket%7c/'],
+    931131 => ['vector' => 'filename', 'payload' => 'http://example.org/x'],
 ];
 
 /**
@@ -601,9 +609,6 @@ $manualOverrides = [
 $documentedUnreachable = [
     920260 => 'REQUEST_URI percent-encoding rewrites the literal "%uff"; REQUEST_BODY has no collector.',
     920610 => 'A literal "#" is the URI fragment delimiter and is stripped from a normalized PSR-7 REQUEST_URI.',
-    921190 => 'A newline cannot survive in a PSR-7 path basename (REQUEST_FILENAME).',
-    921240 => 'A literal "|" is percent-encoded to %7C in a normalized PSR-7 REQUEST_URI, so the "unix:...|" pattern cannot match.',
-    931131 => 'A "scheme://host" string cannot appear in a basename (REQUEST_FILENAME).',
 ];
 
 /** ------------------------------------------------------------------ Derive + verify */

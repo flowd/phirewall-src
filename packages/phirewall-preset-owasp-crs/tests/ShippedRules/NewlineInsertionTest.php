@@ -29,6 +29,9 @@ use PHPUnit\Framework\TestCase;
  * position as the control: wherever a space keeps the rule matching, a newline
  * must keep it matching too, because DOTALL "." and the CRS whitespace classes
  * ([\s\x0b], \s, negated classes) accept both alike.
+ *
+ * A payload in the request URI carries both characters percent-encoded (%20, %0A);
+ * the rules decode them.
  */
 final class NewlineInsertionTest extends TestCase
 {
@@ -36,16 +39,15 @@ final class NewlineInsertionTest extends TestCase
 
     /**
      * Positions where a newline legitimately stops a payload from matching while a
-     * space does not, because the pattern itself distinguishes the two or, where the
-     * entry says so, because the request cannot carry a raw line break there. Keyed by
-     * rule id, then by insertion offset into the fixture payload. The list must be
-     * exact: an entry that no longer applies fails the test as well.
+     * space does not, because the rule itself distinguishes the two. Keyed by rule id,
+     * then by insertion offset into the fixture payload. The list must be exact: an
+     * entry that no longer applies fails the test as well.
      *
      * @var array<int, array<int, string>>
      */
     private const LEGITIMATE_NEWLINE_BREAKS = [
-        932237 => [
-            6 => 'Not the pattern: the payload is sent as the request path, and a URI cannot carry a raw line break. PSR-7 turns it into "_", which the word boundary after the command rejects. Sent as %0a the rule matches.',
+        930120 => [
+            7 => 'Not the phrase match: t:normalizePathWin takes dots and spaces off the end of a path segment, as Windows does, and no line break.',
         ],
         932310 => [
             31 => 'The IMAP command pattern spells the tag/command separator as a literal space; a newline is not that separator.',
@@ -57,6 +59,9 @@ final class NewlineInsertionTest extends TestCase
             2 => 'The character class of the pattern lists a literal space ("[!+ ]"), not whitespace in general.',
         ],
     ];
+
+    /** Vectors that put the payload into the request URI. */
+    private const URI_VECTORS = ['uri', 'filename', 'query_string'];
 
     /** @var array<int, CoreRuleSet> One isolated rule set per rule id. */
     private static array $isolatedRuleSets = [];
@@ -136,15 +141,19 @@ final class NewlineInsertionTest extends TestCase
     {
         $coreRuleSet = $this->isolatedRuleSet($id);
 
+        $inUri = in_array($vector, self::URI_VECTORS, true);
+        $space = $inUri ? '%20' : ' ';
+        $newline = $inUri ? '%0A' : "\n";
+
         $breaks = [];
         for ($offset = 0; $offset <= strlen($payload); ++$offset) {
             $before = substr($payload, 0, $offset);
             $after = substr($payload, $offset);
-            if (!$this->fires($coreRuleSet, $id, $vector, $before . ' ' . $after)) {
+            if (!$this->fires($coreRuleSet, $id, $vector, $before . $space . $after)) {
                 continue;
             }
 
-            if (!$this->fires($coreRuleSet, $id, $vector, $before . "\n" . $after)) {
+            if (!$this->fires($coreRuleSet, $id, $vector, $before . $newline . $after)) {
                 $breaks[] = $offset;
             }
         }

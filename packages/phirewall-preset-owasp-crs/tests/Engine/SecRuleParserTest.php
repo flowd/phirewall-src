@@ -93,7 +93,7 @@ final class SecRuleParserTest extends TestCase
         $this->assertArrayNotHasKey('tag', $rule->actions, 'Tags are collected as a list, not as a last-wins action');
     }
 
-    public function testParsesMultipleVariablesAndIgnoresTransforms(): void
+    public function testParsesMultipleVariablesAndTransformations(): void
     {
         $secRuleParser = new SecRuleParser();
         $line = 'SecRule REQUEST_HEADERS|ARGS "@contains bad" "id:300002,phase:2,deny,t:lowercase,msg:\'Bad content\'"';
@@ -105,8 +105,27 @@ final class SecRuleParserTest extends TestCase
         $this->assertSame('@contains', $rule->operator);
         $this->assertSame('bad', $rule->operatorArgument);
         $this->assertTrue($rule->actions['deny'] ?? false);
-        // transform token should be captured in actions map or ignored; we only assert it's not breaking parsing
         $this->assertSame('Bad content', $rule->actions['msg'] ?? null);
+        $this->assertSame(['lowercase'], $rule->transformations);
+    }
+
+    public function testCollectsTransformationsInTheOrderTheyAreWritten(): void
+    {
+        $secRuleParser = new SecRuleParser();
+        $rule = $secRuleParser->parseLine(
+            'SecRule ARGS "@rx attack" "id:300003,phase:2,block,t:none,t:urlDecodeUni,msg:\'t:lowercase\',T:htmlEntityDecode,tag:\'t:jsDecode\',t:\'cssDecode\'"',
+        );
+
+        $this->assertNotNull($rule);
+        $this->assertSame(['none', 'urlDecodeUni', 'htmlEntityDecode', 'cssDecode'], $rule->transformations);
+    }
+
+    public function testARuleWithoutTransformationsHasNone(): void
+    {
+        $rule = (new SecRuleParser())->parseLine('SecRule ARGS "@rx attack" "id:300004,phase:2,block"');
+
+        $this->assertNotNull($rule);
+        $this->assertSame([], $rule->transformations);
     }
 
     public function testParsesContainsOperator(): void

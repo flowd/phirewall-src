@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Flowd\PhirewallPresetOwaspCrs\Engine;
 
+use Flowd\PhirewallPresetOwaspCrs\Engine\Transformation\Transformation;
+
 final class SecRuleLoader
 {
     /**
@@ -111,6 +113,21 @@ final class SecRuleLoader
         return $lines;
     }
 
+    /**
+     * A rule with a transformation the engine does not have (`t:` action)
+     * cannot be evaluated as written and would never match; it is skipped.
+     */
+    private static function transformationsAreSupported(CoreRule $coreRule): bool
+    {
+        foreach ($coreRule->transformations as $transformation) {
+            if (!Transformation::isSupported($transformation)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     public static function fromString(string $rulesText, ?string $contextFolder = null, ?int $maxValuesPerCrsVariable = null): CoreRuleSet
     {
         $secRuleParser = new SecRuleParser();
@@ -119,7 +136,7 @@ final class SecRuleLoader
 
         foreach ($lines as $line) {
             $rule = $secRuleParser->parseLine($line, $contextFolder);
-            if ($rule instanceof CoreRule) {
+            if ($rule instanceof CoreRule && self::transformationsAreSupported($rule)) {
                 $rules[] = $rule;
             }
         }
@@ -141,7 +158,7 @@ final class SecRuleLoader
 
         foreach ($lines as $line) {
             $rule = $secRuleParser->parseLine($line);
-            if ($rule instanceof CoreRule) {
+            if ($rule instanceof CoreRule && self::transformationsAreSupported($rule)) {
                 $rules[] = $rule;
                 ++$parsed;
             } else {

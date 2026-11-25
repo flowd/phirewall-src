@@ -53,7 +53,7 @@ final class CoreRuleSetMatcher implements RequestMatcherInterface, CompiledDataC
      * so an upgrade rebuilds stale artifacts instead of hydrating an
      * incompatible one.
      */
-    private const COMPILED_SCHEMA_VERSION = 3;
+    private const COMPILED_SCHEMA_VERSION = 4;
 
     /** Diagnostic-header bound: more matched rule ids are summarized as ',+N'. */
     private const MAX_RULE_IDS_IN_HEADER = 10;

@@ -256,7 +256,7 @@ the same order as a `when:` exclusion condition; declare it when the
 transformation depends on request context. The three-parameter
 `RequestValueManipulatorInterface` is unchanged.
 
-Manipulators run after exclusions; global manipulator results are computed once
+Manipulators run after exclusions and before the transformations of a rule; global manipulator results are computed once
 per variable per request and shared across all rules, per-rule manipulators
 specialize from that shared result. Like conditions, manipulators must depend on
 their arguments only: how often one is called for a value is not defined.
@@ -470,11 +470,57 @@ Operator names themselves are matched case-insensitively (`@beginswith` parses
 just as well); this page uses the canonical ModSecurity casing.
 
 The string operators (`@streq`, `@contains`, `@beginsWith`, `@endsWith`) match
-case-insensitively. In ModSecurity these operators are case-sensitive and case
-folding comes from a `t:lowercase` transformation on the target; because this engine
-ignores transformations, folding case in the operators reproduces that common CRS
-pattern. A rule that genuinely wanted case-sensitive matching without `t:lowercase`
-is matched case-insensitively instead (a safe over-match, never an under-match).
+case-insensitively, whether or not the rule lists `t:lowercase`. In ModSecurity these
+operators are case-sensitive; a rule that wanted case-sensitive matching is matched
+case-insensitively instead (a safe over-match, never an under-match).
+
+### Transformations
+
+The operator reads each collected value after the transformations of the rule, in
+the order the rule lists them. `t:none` drops the ones listed before it; a rule
+without a `t:` action reads the values as collected.
+
+```
+SecRule REQUEST_FILENAME "@endsWith /.env" "id:100001,phase:1,deny,t:none,t:urlDecodeUni,t:normalizePath"
+```
+
+This rule matches `/.env` as well as `/%2eenv` and `/app/../.env`.
+
+| Transformation | Effect |
+|----------------|--------|
+| `urlDecode`, `urlDecodeUni` | `%HH` becomes the byte, `+` a space; `urlDecodeUni` also reads `%uHHHH` |
+| `utf8toUnicode` | Characters outside ASCII become `%uHHHH` |
+| `htmlEntityDecode` | Character references (`&lt;`, `&#60;`, `&#x3c`) become the character |
+| `jsDecode`, `cssDecode`, `escapeSeqDecode` | The backslash escapes of JavaScript, CSS and ANSI C |
+| `base64Decode`, `base64DecodeExt`, `hexDecode`, `sqlHexDecode` | Decode Base64 (strict or forgiving), hex, and the `0x...` literals of SQL |
+| `base64Encode`, `hexEncode`, `urlEncode` | Encode |
+| `lowercase`, `uppercase` | ASCII letters |
+| `normalizePath`, `normalizePathWin` | Resolve `.`, `..` and repeated slashes; `Win` also reads `\` as a separator and drops what Windows ignores at the end of a name |
+| `cmdLine` | What a shell makes of a command line: no quotes, carets and backslashes, one space for separators, lower case |
+| `removeNulls`, `replaceNulls` | NUL bytes |
+| `removeWhitespace`, `compressWhitespace` | Whitespace, no-break spaces included |
+| `removeComments`, `removeCommentsChar`, `replaceComments` | The comments of C, HTML and SQL |
+| `trim`, `trimLeft`, `trimRight` | Whitespace at the ends |
+| `length`, `md5`, `sha1` | Length in bytes, raw digest |
+
+Names are read without regard to case, and `normalisePath` / `normalisePathWin` are
+accepted too. The transformations behave as in Coraza, without a Unicode mapping:
+`%uHHHH` and `\uHHHH` become the low byte of the number, a full-width character its
+ASCII character.
+
+What a transformation gets is the value as collected: path and query string
+percent-encoded as the request has them, parameters and cookies as PHP has decoded
+them. A rule with `t:urlDecodeUni` therefore decodes a parameter a second time, as
+it does in ModSecurity: `?q=%253Cscript` counts as `<script`, and a `+` in a
+parameter value as a space.
+
+The transformations work on bytes, the operators read UTF-8. In a transformed value
+that is not UTF-8, each byte that is not part of a character counts as the character
+with the number of that byte, so `%FC` is `ü` and a pattern such as `\xfc` finds it.
+
+A rule with a transformation the engine does not have cannot be evaluated as written:
+`SecRuleLoader` skips it (counted as skipped in the [parse report](#with-parse-report)),
+and exclusion text with such a condition is rejected.
 
 ### Actions
 
@@ -488,9 +534,11 @@ is matched case-insensitively instead (a safe over-match, never an under-match).
 | `severity:'LEVEL'` | Anomaly score contribution: CRITICAL 5, ERROR 4, WARNING 3, NOTICE 2 (missing/unknown scores as CRITICAL) |
 | `logdata:'template'` | Log template expanded on a match (`%{TX.0}`, `%{MATCHED_VAR_NAME}`, `%{MATCHED_VAR}`) |
 | `tag:'name'` | Rule tags (repeatable); `paranoia-level/N` sets the level, tags drive `excludeTargetByTag()` |
+| `t:name` | A [transformation](#transformations) of the collected values (repeatable, applied in order) |
+| `multiMatch` | The operator also reads the value as collected and after each single transformation, not only after the last |
 | `ctl:ruleRemove*` | Honored only in exclusion text applied via [`applyRuleExclusions()`](#crs-rule-exclusion-syntax); ignored in normal rule loading |
 
-Unlisted actions (`t:`, `setvar:`, `chain`, ...) are ignored during normal rule
+Unlisted actions (`setvar:`, `chain`, ...) are ignored during normal rule
 loading; a rule whose evaluation would depend on them (e.g. a chained rule) is
 dropped at import of the bundled snapshot.
 
@@ -750,6 +798,8 @@ The OWASP CRS engine uses a strategy pattern to keep rule evaluation extensible 
 - **Variable collectors** (`VariableCollectorInterface`) extract target values from the PSR-7 request
 - **Operator evaluators** (`OperatorEvaluatorInterface`) match those values against the rule's pattern
 
+In between, the rule's [transformations](#transformations) (`TransformationPipeline`) rewrite each value.
+
 ```text
 SecRule ARGS "@rx (?i)union.*select" "id:942100,phase:2,deny,msg:'SQLi'"
        ^^^^  ^^^                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -758,7 +808,7 @@ SecRule ARGS "@rx (?i)union.*select" "id:942100,phase:2,deny,msg:'SQLi'"
        Variable --------> VariableCollectorFactory --> ArgsCollector
 ```
 
-When a rule is constructed, the factories resolve the variable names and operator into concrete strategy instances. On each request, `CoreRuleSet::evaluate()` collects values via the variable collectors (applying exclusions and manipulators), passes them to the operator evaluators and accumulates the matching rules' severity scores into a `RuleSetEvaluation`.
+When a rule is constructed, the factories resolve the variable names and operator into concrete strategy instances. On each request, `CoreRuleSet::evaluate()` collects values via the variable collectors (applying exclusions and manipulators), applies the rule's transformations, passes the result to the operator evaluators and accumulates the matching rules' severity scores into a `RuleSetEvaluation`.
 
 ### Variable Collectors
 

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Flowd\PhirewallPresetOwaspCrs\Engine\Variable;
 
+use Flowd\PhirewallPresetOwaspCrs\Engine\Transformation\TransformationPipeline;
 use Psr\Http\Message\ServerRequestInterface;
 
 /**
@@ -33,6 +34,12 @@ final class RequestVariableValues
     public const DEFAULT_MAX_VALUES_PER_CRS_VARIABLE = 2000;
 
     /**
+     * How many bytes of transformed values a request keeps for further rules,
+     * see {@see transformed()}.
+     */
+    public const MAX_KEPT_TRANSFORMED_BYTES = 4_194_304;
+
+    /**
      * Collected entries cache keyed by variable name.
      *
      * @var array<string, list<array{name: ?string, value: string, isNameEntry?: bool}>>
@@ -52,6 +59,17 @@ final class RequestVariableValues
      * @var array<string, array{0: list<?string>, 1: list<string>, 2: int}>
      */
     private array $collections = [];
+
+    /**
+     * Values after the transformations of a rule, by the key of the pipeline and by the value as collected.
+     *
+     * @var array<string, array<string, string>>
+     */
+    private array $transformedValues = [];
+
+    private int $keptTransformedBytes = 0;
+
+    private bool $keepsTransformedValues = true;
 
     private readonly int $maxValuesPerCrsVariable;
 
@@ -159,6 +177,66 @@ final class RequestVariableValues
     public function rememberCollection(string $targetList, array $collection): void
     {
         $this->collections[$targetList] = $collection;
+    }
+
+    /**
+     * The values after the transformations of a rule, at the positions they
+     * came at; null when none of them changes. Rules with the same transformations get the
+     * result that was worked out for the first of them.
+     *
+     * A value the transformations change is a string of its own, and a large
+     * request whose values they all change would be held once per kind of
+     * rule. Up to {@see self::MAX_KEPT_TRANSFORMED_BYTES} of such strings are
+     * kept; beyond that every rule transforms its values again, which costs
+     * time and no memory, and {@see keepsTransformedValues()} says so.
+     *
+     * @internal
+     *
+     * @param list<string> $values
+     * @return array<int, string>|null
+     */
+    public function transformed(TransformationPipeline $transformationPipeline, array $values): ?array
+    {
+        $known = &$this->transformedValues[$transformationPipeline->key];
+        $known ??= [];
+
+        $transformedValues = null;
+        foreach ($values as $index => $value) {
+            $transformed = $known[$value] ?? null;
+            if ($transformed === null) {
+                $transformed = $transformationPipeline->apply($value);
+                if ($transformed === $value) {
+                    $known[$value] = $value;
+                    continue;
+                }
+
+                $length = strlen($transformed);
+                if ($this->keptTransformedBytes + $length > self::MAX_KEPT_TRANSFORMED_BYTES) {
+                    $this->keepsTransformedValues = false;
+                } else {
+                    $this->keptTransformedBytes += $length;
+                    $known[$value] = $transformed;
+                }
+            } elseif ($transformed === $value) {
+                continue;
+            }
+
+            $transformedValues ??= $values;
+            $transformedValues[$index] = $transformed;
+        }
+
+        return $transformedValues;
+    }
+
+    /**
+     * False once a transformed value was not kept: what is built from the
+     * values of this request from then on must not be kept either.
+     *
+     * @internal
+     */
+    public function keepsTransformedValues(): bool
+    {
+        return $this->keepsTransformedValues;
     }
 
     /**

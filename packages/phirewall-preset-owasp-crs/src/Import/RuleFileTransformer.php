@@ -6,6 +6,7 @@ namespace Flowd\PhirewallPresetOwaspCrs\Import;
 
 use Flowd\PhirewallPresetOwaspCrs\Engine\CoreRule;
 use Flowd\PhirewallPresetOwaspCrs\Engine\SecRuleParser;
+use Flowd\PhirewallPresetOwaspCrs\Engine\Transformation\Transformation;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Variable\TargetSelector;
 
 /**
@@ -13,10 +14,11 @@ use Flowd\PhirewallPresetOwaspCrs\Engine\Variable\TargetSelector;
  * engine can evaluate and groups them by paranoia level.
  *
  * A rule is kept when it parses, is a blocking rule (deny or block action),
- * uses a supported operator, is not part of a chain (the engine evaluates
- * rules independently, so keeping only a chain's first condition would
- * over-block) and inspects at least one supported target (including named
- * selectors such as "REQUEST_HEADERS:User-Agent"). Unsupported selectors
+ * uses a supported operator and supported transformations only, is not part
+ * of a chain (the engine evaluates rules independently, so keeping only a
+ * chain's first condition would over-block) and inspects at least one
+ * supported target (including named selectors such as
+ * "REQUEST_HEADERS:User-Agent"). Unsupported selectors
  * within a kept rule (for example "XML:/*") collect no values at runtime, so
  * the rule evaluates against its supported targets only.
  */
@@ -31,6 +33,8 @@ final readonly class RuleFileTransformer
     public const REASON_UNSUPPORTED_OPERATOR = 'unsupportedOperator';
 
     public const REASON_UNSUPPORTED_VARIABLES = 'unsupportedVariables';
+
+    public const REASON_UNSUPPORTED_TRANSFORMATION = 'unsupportedTransformation';
 
     /**
      * Operators implemented by Flowd\PhirewallPresetOwaspCrs\Engine\Operator\OperatorEvaluatorFactory.
@@ -100,6 +104,11 @@ final readonly class RuleFileTransformer
                 continue;
             }
 
+            if (!$this->usesSupportedTransformations($coreRule)) {
+                $droppedRuleCounts[self::REASON_UNSUPPORTED_TRANSFORMATION] = ($droppedRuleCounts[self::REASON_UNSUPPORTED_TRANSFORMATION] ?? 0) + 1;
+                continue;
+            }
+
             if (!$this->inspectsSupportedVariable($coreRule)) {
                 $droppedRuleCounts[self::REASON_UNSUPPORTED_VARIABLES] = ($droppedRuleCounts[self::REASON_UNSUPPORTED_VARIABLES] ?? 0) + 1;
                 continue;
@@ -112,9 +121,8 @@ final readonly class RuleFileTransformer
             $severityKey = $coreRule->severity ?? 'NONE';
             $keptRuleCountsBySeverity[$severityKey] = ($keptRuleCountsBySeverity[$severityKey] ?? 0) + 1;
 
-            // The engine does not apply t:lowercase, so an @rx pattern relying on it stays
-            // case-sensitive here and mixed case evades it; a leading inline (?i) restores the
-            // intended case-insensitive match.
+            // t:lowercase lowercases ASCII letters only. A leading inline (?i) lets the
+            // @rx pattern of such a rule match the other letters without regard to case as well.
             $logicalLine = $this->injectCaseInsensitiveFlagWhenLowercased($logicalLine);
 
             $ruleLinesByParanoiaLevel[$coreRule->paranoiaLevel][] = $logicalLine;
@@ -129,6 +137,21 @@ final readonly class RuleFileTransformer
             $droppedRuleCounts,
             $keptRuleCountsBySeverity,
         );
+    }
+
+    /**
+     * Whether the engine has every transformation the rule asks for; without
+     * one of them the operator would read other values than the rule means.
+     */
+    private function usesSupportedTransformations(CoreRule $coreRule): bool
+    {
+        foreach ($coreRule->transformations as $transformation) {
+            if (!Transformation::isSupported($transformation)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -174,10 +197,11 @@ final readonly class RuleFileTransformer
     /**
      * Prepend an inline (?i) to an @rx pattern when the source rule carries t:lowercase.
      *
-     * ModSecurity lowercases the subject before matching for such rules; the engine does not run
-     * that transformation, so without the inline flag the pattern is case-sensitive and mixed case
-     * evades it (notably the Java gadget names in 944240/944250). The flag is only added when the
-     * operator is @rx and the pattern does not already open with a case-insensitive modifier.
+     * The engine lowercases the subject of such a rule like ModSecurity: byte by byte, ASCII
+     * letters only. The patterns are compiled for UTF-8 though, and with the inline flag a
+     * letter outside ASCII is matched without regard to case too; on a subject that has passed
+     * t:lowercase the flag changes nothing else. It is only added when the operator is @rx and
+     * the pattern does not already open with a case-insensitive modifier.
      */
     private function injectCaseInsensitiveFlagWhenLowercased(string $logicalLine): string
     {

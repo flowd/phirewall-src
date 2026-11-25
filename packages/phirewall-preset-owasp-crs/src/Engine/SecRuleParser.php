@@ -12,7 +12,8 @@ namespace Flowd\PhirewallPresetOwaspCrs\Engine;
  * those factories are the source of truth. Actions: id (required), phase (ignored),
  * deny/block (boolean), msg/logdata (optional), severity (resolved to an anomaly
  * score, missing/unknown scores as CRITICAL), tag (collected as a list; the
- * paranoia level is read from a `paranoia-level/N` tag).
+ * paranoia level is read from a `paranoia-level/N` tag), t (the transformations,
+ * collected as a list in the order they are written).
  */
 final class SecRuleParser
 {
@@ -74,7 +75,7 @@ final class SecRuleParser
         }
 
         // Actions: comma-separated key[:value]
-        ['actions' => $actions, 'tags' => $tags, 'ctls' => $ctls] = $this->parseActions($actionsPart);
+        ['actions' => $actions, 'tags' => $tags, 'ctls' => $ctls, 'transformations' => $transformations] = $this->parseActions($actionsPart);
         $id = isset($actions['id']) ? (int)$actions['id'] : 0;
         if ($id <= 0) {
             return null; // require id
@@ -104,7 +105,7 @@ final class SecRuleParser
         }
 
         return [
-            'rule' => new CoreRule($id, $variables, $op, $arg, $actions, $contextFolder, $anomalyScore, $severity, $paranoiaLevel, $tags),
+            'rule' => new CoreRule($id, $variables, $op, $arg, $actions, $contextFolder, $anomalyScore, $severity, $paranoiaLevel, $tags, null, $transformations),
             'ctl' => $ctls,
         ];
     }
@@ -246,9 +247,10 @@ final class SecRuleParser
     /**
      * Parse actions key/value map. Values can be quoted (single or double). Commas separate actions.
      * Boolean actions like "deny" will be set to true. Repeated `tag:` and `ctl:` actions are
-     * collected into their own lists (in source order) instead of the last-wins map.
+     * collected into their own lists (in source order) instead of the last-wins map; so are the
+     * `t:` actions, which stay in the map as well.
      *
-     * @return array{actions: array<string, int|string|bool>, tags: list<string>, ctls: list<string>}
+     * @return array{actions: array<string, int|string|bool>, tags: list<string>, ctls: list<string>, transformations: list<string>}
      */
     private function parseActions(string $actionsPart): array
     {
@@ -281,6 +283,7 @@ final class SecRuleParser
 
         $tags = [];
         $ctls = [];
+        $transformations = [];
         foreach ($parts as $part) {
             if ($part === '') {
                 continue;
@@ -302,11 +305,15 @@ final class SecRuleParser
                     continue;
                 }
 
+                if (strtolower($key) === 't') {
+                    $transformations[] = $value;
+                }
+
                 $actions[$key] = is_numeric($value) ? (int)$value : $value;
             }
         }
 
-        return ['actions' => $actions, 'tags' => $tags, 'ctls' => $ctls];
+        return ['actions' => $actions, 'tags' => $tags, 'ctls' => $ctls, 'transformations' => $transformations];
     }
 
     private function stripQuotes(string $value): string
