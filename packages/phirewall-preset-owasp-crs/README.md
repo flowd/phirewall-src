@@ -344,8 +344,8 @@ rules costs about ten milliseconds at paranoia level 1 and, under PHP-FPM,
 would run on every request. Both presets therefore load lazily: the parse
 happens on the first evaluated request. To also skip that first parse per
 process, give your `Config` a compiled-data cache (phirewall 0.9 or newer). The
-rules are then served from an OPcache-backed artifact, which leaves about one
-millisecond per request for loading and evaluating them:
+rules are then served from an OPcache-backed artifact, which leaves between one
+and two milliseconds per request for loading and evaluating them:
 
 ```php
 use Flowd\Phirewall\Support\CompiledDataCache;

@@ -82,10 +82,10 @@ and size of arguments. Two numbers matter, depending on how PHP runs:
 
 | Request shape (paranoia level 1) | PHP-FPM, per request | Long-running worker |
 |----------------------------------|---------------------:|--------------------:|
-| GET without parameters | 0.8 ms | 0.08 ms |
-| GET with 3 query parameters | 0.9 ms | 0.17 ms |
-| POST with 8 form fields | 1.1 ms | 0.33 ms |
-| SQL injection attempt (blocked) | 0.9 ms | 0.10 ms |
+| GET without parameters | 1.1 ms | 0.14 ms |
+| GET with 3 query parameters | 1.3 ms | 0.29 ms |
+| POST with 8 form fields | 1.7 ms | 0.65 ms |
+| SQL injection attempt (blocked) | 1.2 ms | 0.20 ms |
 
 Measured on PHP 8.5 with OPcache and PCRE JIT in a Linux container on an ARM
 machine, code on local disk. The PHP-FPM column is the whole firewall for one
@@ -107,11 +107,11 @@ the cheap banned-key lookup from the table above.
 Cost per request times requests per second gives the CPU share the firewall
 needs. For the two typical setups:
 
-| Sustained load | 6 rules (~8 us) | CRS PL1 under PHP-FPM (~1 ms) | CRS PL1 in a worker (~0.2 ms) |
+| Sustained load | 6 rules (~8 us) | CRS PL1 under PHP-FPM (~1.3 ms) | CRS PL1 in a worker (~0.3 ms) |
 |----------------|----------------:|------------------------------:|------------------------------:|
-| 10 req/s | 0.008% of one core | 1% of one core | 0.2% of one core |
-| 100 req/s | 0.08% of one core | 10% of one core | 2% of one core |
-| 1,000 req/s | 0.8% of one core | one full core | 20% of one core |
+| 10 req/s | 0.008% of one core | 1.3% of one core | 0.3% of one core |
+| 100 req/s | 0.08% of one core | 13% of one core | 3% of one core |
+| 1,000 req/s | 0.8% of one core | 1.3 cores | 30% of one core |
 
 Rule-of-thumb: counting rules are free at any realistic load; give CRS a
 thought once you serve hundreds of uncached requests per second, and scope it
