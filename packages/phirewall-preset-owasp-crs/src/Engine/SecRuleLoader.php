@@ -137,6 +137,21 @@ final class SecRuleLoader
         return true;
     }
 
+    /**
+     * Whether a parsed rule carries the `chain` action (case-insensitive). Reads the actions
+     * the parser has already tokenized, so the line is not parsed a second time.
+     */
+    private static function startsAChain(CoreRule $coreRule): bool
+    {
+        foreach (array_keys($coreRule->actions) as $actionName) {
+            if (strtolower($actionName) === 'chain') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public static function fromString(string $rulesText, ?string $contextFolder = null, ?int $maxValuesPerCrsVariable = null): CoreRuleSet
     {
         return self::load($rulesText, $contextFolder, $maxValuesPerCrsVariable)['rules'];
@@ -187,7 +202,7 @@ final class SecRuleLoader
                 continue;
             }
 
-            if ($secRuleParser->hasChainAction($line)) {
+            if (self::startsAChain($rule)) {
                 $skippedByReason[self::SKIP_REASON_CHAINED] = ($skippedByReason[self::SKIP_REASON_CHAINED] ?? 0) + 1;
                 $chainContinuationExpected = true;
                 continue;
