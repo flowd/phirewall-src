@@ -185,8 +185,11 @@ echo
 
 REPORT=""
 printf '%-34s %s\n' "Package" "Changes since ${LAST_TAG:-the beginning}"
-for dir in packages/*/; do
-    name="$(jq -r '.name' "${dir}composer.json")"
+# Only directories with a composer.json are packages. A leftover directory of another
+# branch can hold ignored files only, which the clean tree check does not catch.
+for composer in packages/*/composer.json; do
+    dir="${composer%composer.json}"
+    name="$(jq -r '.name' "$composer")"
     if [[ -z "$LAST_TAG" ]]; then
         status="first release"
     elif git diff --quiet "$LAST_TAG" HEAD -- "$dir"; then
