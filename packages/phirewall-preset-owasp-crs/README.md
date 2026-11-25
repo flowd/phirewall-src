@@ -273,7 +273,7 @@ transformation depends on request context. The three-parameter
 > content. Prefer target exclusions; keep manipulators as narrow as possible.
 > Exceptions thrown by a manipulator propagate to the caller.
 
-Manipulators run after exclusions. Global manipulators are applied once per
+Manipulators run after exclusions and before the transformations of a rule. Global manipulators are applied once per
 variable per request and shared across all rules; per-rule manipulators
 specialize from that shared result. Conditions of exclusions are shared in the
 same way: a global one is asked once per request for an entry, one by tag once
@@ -391,6 +391,7 @@ process therefore ships only the CRS rules that the engine can evaluate faithful
 | Blocking rules only | Rules without a `deny`/`block` action (initialization, control flow) are dropped; kept rules contribute their `severity` score to the anomaly total |
 | No chains | Chained rules are dropped entirely; keeping only a chain's first condition would over-block |
 | Supported operators | `@rx`, `@contains`, `@streq`, `@beginsWith`, `@endsWith`, `@pm`, `@pmFromFile`; everything else (`@detectSQLi`, `@validateByteRange`, ...) is dropped |
+| Supported transformations | A rule that asks for a transformation (`t:`) the engine does not have is dropped; no rule of the bundled release does |
 | Supported targets | `REQUEST_URI`, `REQUEST_METHOD`, `QUERY_STRING`, `ARGS`, `ARGS_NAMES`, `REQUEST_COOKIES`, `REQUEST_COOKIES_NAMES`, `REQUEST_HEADERS`, `REQUEST_HEADERS_NAMES`, `REQUEST_FILENAME` - bare or with a named selector (`REQUEST_HEADERS:User-Agent`, `!ARGS_NAMES:/^utm_/`); rules whose positive targets are all unsupported (`XML:/*`, `REQUEST_BODY`, ...) are dropped |
 
 Further engine differences to be aware of:
@@ -399,13 +400,23 @@ Further engine differences to be aware of:
   examined as `ARGS`; the engine does not parse raw JSON/XML bodies or inspect
   uploaded files (no `REQUEST_BODY`/`XML`/`FILES` collection), so a payload that
   appears only there is not seen.
-- **No transformations.** `t:lowercase`, `t:urlDecodeUni` and friends are ignored;
-  rules are evaluated against the raw collected values. As one deliberate exception,
-  the string operators (`@streq`, `@contains`, `@beginsWith`, `@endsWith`) fold case,
-  reproducing the common CRS pattern of a `t:lowercase` transformation plus a
-  lowercase literal; a rule that genuinely wanted case-sensitive matching without
-  `t:lowercase` is matched case-insensitively instead (a safe over-match, never an
-  under-match).
+- **Transformations.** The operator of a rule reads each collected value after the
+  rule's transformations (`t:urlDecodeUni`, `t:htmlEntityDecode`, `t:lowercase`, ...),
+  applied in the order the rule lists them; `t:none` drops the ones before it, and a
+  `multiMatch` rule also reads the value as collected and after each single
+  transformation. Implemented are `base64Decode`, `base64DecodeExt`, `base64Encode`, `cmdLine`, `compressWhitespace`, `cssDecode`, `escapeSeqDecode`, `hexDecode`, `hexEncode`, `htmlEntityDecode`, `jsDecode`, `length`, `lowercase`, `md5`, `normalizePath`, `normalizePathWin`, `removeComments`, `removeCommentsChar`, `removeNulls`, `removeWhitespace`, `replaceComments`, `replaceNulls`, `sha1`, `sqlHexDecode`, `trim`, `trimLeft`, `trimRight`, `uppercase`, `urlDecode`, `urlDecodeUni`, `urlEncode`, `utf8toUnicode`.
+  They behave as in Coraza, without a Unicode mapping: `%uHHHH` and `\uHHHH` become
+  the low byte of the number, a full-width character its ASCII character. Path and
+  query string are collected as the request has them, percent-encoded; parameters
+  and cookies as PHP has decoded them, so a rule with `t:urlDecodeUni` decodes a
+  parameter a second time, as it does in ModSecurity. The transformations work on
+  bytes and the operators read UTF-8: in a transformed value that is not UTF-8,
+  each byte that is not part of a character counts as the character with the number
+  of that byte (`%FC` is `ü`).
+- **String operators fold case.** `@streq`, `@contains`, `@beginsWith` and `@endsWith`
+  compare without regard to case, whether or not the rule lists `t:lowercase`; a rule
+  that wanted case-sensitive matching is matched case-insensitively instead (a safe
+  over-match, never an under-match).
 - **Regex semantics.** `@rx` patterns are compiled as PCRE with the `s` (DOTALL) and
   `u` modifiers, as ModSecurity and Coraza compile them: `.` also matches a line
   break, so a `%0a` inside a payload cannot split a CRS pattern. `$` keeps PCRE's

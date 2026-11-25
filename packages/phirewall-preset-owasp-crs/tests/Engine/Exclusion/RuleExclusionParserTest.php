@@ -121,6 +121,16 @@ final class RuleExclusionParserTest extends TestCase
         );
     }
 
+    public function testExclusionRuleWithUnsupportedTransformationIsRejected(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Unsupported transformation "parityEven7bit"');
+
+        $this->parse(
+            'SecRule REQUEST_URI "@beginsWith /api/" "id:10006,phase:1,pass,nolog,t:none,t:parityEven7bit,ctl:ruleRemoveById=942100"',
+        );
+    }
+
     public function testExclusionRuleWithUnsupportedVariableIsRejected(): void
     {
         $this->expectException(\InvalidArgumentException::class);

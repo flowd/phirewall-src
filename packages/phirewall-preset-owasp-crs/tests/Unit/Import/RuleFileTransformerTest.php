@@ -79,6 +79,17 @@ final class RuleFileTransformerTest extends TestCase
         $this->assertSame([RuleFileTransformer::REASON_UNSUPPORTED_OPERATOR => 1], $fileTransformation->droppedRuleCounts);
     }
 
+    public function testDropsRulesWithAnUnsupportedTransformation(): void
+    {
+        $fileTransformation = $this->transformer()->transform(
+            'SecRule ARGS "@rx attack" "id:942102,phase:2,block,t:none,t:urlDecodeUni,t:parityEven7bit"' . "\n"
+            . 'SecRule ARGS "@rx attack" "id:942103,phase:2,block,t:none,t:urlDecodeUni,t:normalisePath"',
+        );
+
+        $this->assertSame(1, $fileTransformation->keptRuleCount());
+        $this->assertSame([RuleFileTransformer::REASON_UNSUPPORTED_TRANSFORMATION => 1], $fileTransformation->droppedRuleCounts);
+    }
+
     public function testDropsRulesWhoseVariablesAreAllUnsupported(): void
     {
         $fileTransformation = $this->transformer()->transform(

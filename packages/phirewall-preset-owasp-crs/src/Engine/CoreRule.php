@@ -8,6 +8,7 @@ use Flowd\PhirewallPresetOwaspCrs\Engine\Operator\DetailedOperatorEvaluatorInter
 use Flowd\PhirewallPresetOwaspCrs\Engine\Operator\OperatorEvaluatorFactory;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Operator\OperatorEvaluatorInterface;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Operator\PhraseSet;
+use Flowd\PhirewallPresetOwaspCrs\Engine\Transformation\TransformationPipeline;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Variable\RequestVariableValues;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Variable\TargetSelector;
 use Psr\Http\Message\ServerRequestInterface;
@@ -22,6 +23,10 @@ use Psr\Http\Message\ServerRequestInterface;
  * member; negated selectors (`!REQUEST_HEADERS:Cookie`) exclude members from
  * the rule's bare selector of the same variable. Selectors of unsupported
  * variables (e.g. `XML:/*`) collect nothing (partial evaluation).
+ *
+ * The operator reads each collected value after the rule's transformations
+ * (`t:urlDecodeUni`, `t:lowercase`, ...), see {@see TransformationPipeline}.
+ * A rule that asks for a transformation the engine does not have never matches.
  */
 final readonly class CoreRule
 {
@@ -62,11 +67,29 @@ final readonly class CoreRule
     private string $targetList;
 
     /**
+     * The rule's transformations; null when one of them is not supported.
+     */
+    private ?TransformationPipeline $transformationPipeline;
+
+    /**
+     * Whether the operator also reads the value as collected and after
+     * every single transformation, not only after the last (`multiMatch`).
+     */
+    private bool $multiMatch;
+
+    /**
+     * The target list and the transformations as one text. Rules with the
+     * same text hand the same values to their operator.
+     */
+    private string $transformedTargetList;
+
+    /**
      * @param list<string> $variables
      * @param array<string, int|string|bool> $actions
      * @param list<string> $tags
      * @param PhraseSet|null $phraseSet The phrases of a `@pm` / `@pmFromFile` operator, ready-made as the compiled
      *                                  rule data delivers them; without, the operator parses its operand or reads its file.
+     * @param list<string> $transformations The names of the rule's `t:` actions in the order they are written, `none` included.
      */
     public function __construct(
         public int $id,
@@ -80,6 +103,7 @@ final readonly class CoreRule
         public int $paranoiaLevel = 1,
         public array $tags = [],
         private ?PhraseSet $phraseSet = null,
+        public array $transformations = [],
     ) {
         if ($anomalyScore < 1) {
             throw new \InvalidArgumentException(
@@ -119,6 +143,17 @@ final readonly class CoreRule
         $this->targets = $targets;
         $this->textExclusions = $textExclusions;
         $this->targetList = serialize($variables);
+
+        $multiMatch = false;
+        foreach ($actions as $actionName => $actionValue) {
+            if ($actionValue === true && strtolower($actionName) === 'multimatch') {
+                $multiMatch = true;
+            }
+        }
+
+        $this->multiMatch = $multiMatch;
+        $this->transformationPipeline = TransformationPipeline::fromNames($transformations);
+        $this->transformedTargetList = ($multiMatch ? 'm' : 't') . "\0" . $this->transformationPipeline?->key . "\0" . $this->targetList;
     }
 
     /**
@@ -126,7 +161,7 @@ final readonly class CoreRule
      *
      * A rule that was given its phrases ready-made carries them along as "phraseSet".
      *
-     * @return array{id: int, variables: list<string>, operator: string, operatorArgument: string, actions: array<string, int|string|bool>, contextFolder: ?string, anomalyScore: int, severity: ?string, paranoiaLevel: int, tags: list<string>, phraseSet?: array{phrases: list<string>, prefilter: ?string}}
+     * @return array{id: int, variables: list<string>, operator: string, operatorArgument: string, actions: array<string, int|string|bool>, contextFolder: ?string, anomalyScore: int, severity: ?string, paranoiaLevel: int, tags: list<string>, transformations: list<string>, phraseSet?: array{phrases: list<string>, prefilter: ?string}}
      */
     public function toArray(): array
     {
@@ -141,6 +176,7 @@ final readonly class CoreRule
             'severity' => $this->severity,
             'paranoiaLevel' => $this->paranoiaLevel,
             'tags' => $this->tags,
+            'transformations' => $this->transformations,
         ];
 
         if ($this->phraseSet instanceof PhraseSet) {
@@ -170,6 +206,7 @@ final readonly class CoreRule
         $severity = $data['severity'] ?? null;
         $paranoiaLevel = $data['paranoiaLevel'] ?? 1;
         $tags = $data['tags'] ?? [];
+        $transformations = $data['transformations'] ?? [];
 
         if (!is_int($id)
             || !is_array($variables)
@@ -181,6 +218,7 @@ final readonly class CoreRule
             || ($severity !== null && !is_string($severity))
             || !is_int($paranoiaLevel)
             || !is_array($tags)
+            || !is_array($transformations)
         ) {
             throw new \InvalidArgumentException('Compiled CRS rule data has an unexpected shape.');
         }
@@ -215,6 +253,17 @@ final readonly class CoreRule
             $validatedTags[] = $tag;
         }
 
+        // A rule hydrated without one of its transformations would read other
+        // values than the rule in the source.
+        $validatedTransformations = [];
+        foreach ($transformations as $transformation) {
+            if (!is_string($transformation)) {
+                throw new \InvalidArgumentException('Compiled CRS rule "transformations" must be a list of strings.');
+            }
+
+            $validatedTransformations[] = $transformation;
+        }
+
         // Throws for phrase data of the wrong shape: a rule hydrated with half its
         // phrases would match less than the rule in the source.
         $phraseSet = isset($data['phraseSet']) ? PhraseSet::fromArray($data['phraseSet']) : null;
@@ -231,6 +280,7 @@ final readonly class CoreRule
             $paranoiaLevel,
             $validatedTags,
             $phraseSet,
+            $validatedTransformations,
         );
     }
 
@@ -250,7 +300,8 @@ final readonly class CoreRule
      * matched value, operator captures) for scoring and logdata expansion.
      *
      * A {@see RuleTargetSession} applies runtime exclusions and manipulators to
-     * the collected entries before the operator sees them.
+     * the collected entries before the operator sees them; the rule's
+     * transformations come after both.
      */
     public function evaluate(
         ServerRequestInterface $serverRequest,
@@ -272,9 +323,16 @@ final readonly class CoreRule
             return CoreRuleResult::noMatch();
         }
 
+        // A rule that asks for a transformation the engine does not have cannot be
+        // evaluated as written. Like a rule with an unsupported operator it never matches.
+        if (!$this->transformationPipeline instanceof TransformationPipeline) {
+            return CoreRuleResult::noMatch();
+        }
+
         $requestVariableValues ??= new RequestVariableValues($serverRequest);
 
-        [$labels, $values, $longestValue] = $this->collect($requestVariableValues, $ruleTargetSession);
+        $collection = $this->collect($requestVariableValues, $ruleTargetSession);
+        [$labels, $values, $longestValue] = $collection;
 
         // Fail closed: if a variable this rule inspects was truncated at the per-variable
         // cap, the dropped portion is un-inspectable, so treat the oversized request as a
@@ -299,6 +357,23 @@ final readonly class CoreRule
 
         if ($values === []) {
             return CoreRuleResult::noMatch();
+        }
+
+        if (!$this->transformationPipeline->isEmpty()) {
+            [$labels, $values, $longestValue] = $this->collect($requestVariableValues, $ruleTargetSession, $collection);
+
+            // The limit is for what the operator reads, and utf8toUnicode makes a value longer.
+            if ($longestValue > $maxInspectableValueLength) {
+                foreach ($values as $index => $value) {
+                    if (strlen($value) > $maxInspectableValueLength) {
+                        return CoreRuleResult::failClosed($labels[$index] ?? null);
+                    }
+                }
+            }
+
+            if ($values === []) {
+                return CoreRuleResult::noMatch();
+            }
         }
 
         if ($this->operatorEvaluator instanceof DetailedOperatorEvaluatorInterface) {
@@ -330,15 +405,27 @@ final readonly class CoreRule
      * is assembled once per request and exclusion scope, and every further
      * rule with the same list takes the result.
      *
+     * Given the values as collected, the result is these values after the
+     * rule's transformations. That depends on the target list and on the
+     * transformations only, and is shared in the same way.
+     *
+     * @param array{0: list<?string>, 1: list<string>, 2: int}|null $untransformed
      * @return array{0: list<?string>, 1: list<string>, 2: int}
      */
-    private function collect(RequestVariableValues $requestVariableValues, ?RuleTargetSession $ruleTargetSession): array
-    {
+    private function collect(
+        RequestVariableValues $requestVariableValues,
+        ?RuleTargetSession $ruleTargetSession,
+        ?array $untransformed = null,
+    ): array {
+        $list = $untransformed === null ? $this->targetList : $this->transformedTargetList;
+
         if (!$ruleTargetSession instanceof RuleTargetSession) {
-            $collection = $requestVariableValues->collection($this->targetList);
+            $collection = $requestVariableValues->collection($list);
             if ($collection === null) {
-                $collection = $this->measured($this->collectTargetValues($requestVariableValues, null));
-                $requestVariableValues->rememberCollection($this->targetList, $collection);
+                [$collection, $remember] = $this->assemble($requestVariableValues, null, $untransformed);
+                if ($remember) {
+                    $requestVariableValues->rememberCollection($list, $collection);
+                }
             }
 
             return $collection;
@@ -346,17 +433,109 @@ final readonly class CoreRule
 
         $scope = $ruleTargetSession->collectionScope($this);
         if ($scope === null) {
-            return $this->measured($this->collectTargetValues($requestVariableValues, $ruleTargetSession));
+            return $this->assemble($requestVariableValues, $ruleTargetSession, $untransformed)[0];
         }
 
-        $key = $scope . ':' . $this->targetList;
+        $key = $scope . ':' . $list;
         $collection = $ruleTargetSession->collection($key);
         if ($collection === null) {
-            $collection = $this->measured($this->collectTargetValues($requestVariableValues, $ruleTargetSession));
-            $ruleTargetSession->rememberCollection($key, $collection);
+            [$collection, $remember] = $this->assemble($requestVariableValues, $ruleTargetSession, $untransformed);
+            if ($remember) {
+                $ruleTargetSession->rememberCollection($key, $collection);
+            }
         }
 
         return $collection;
+    }
+
+    /**
+     * What {@see collect()} looks for, built anew, and whether to keep it
+     * for the rules to come.
+     *
+     * @param array{0: list<?string>, 1: list<string>, 2: int}|null $untransformed
+     * @return array{0: array{0: list<?string>, 1: list<string>, 2: int}, 1: bool}
+     */
+    private function assemble(
+        RequestVariableValues $requestVariableValues,
+        ?RuleTargetSession $ruleTargetSession,
+        ?array $untransformed,
+    ): array {
+        if ($untransformed === null) {
+            return [$this->measured($this->collectTargetValues($requestVariableValues, $ruleTargetSession)), true];
+        }
+
+        return $this->transform($requestVariableValues, $untransformed);
+    }
+
+    /**
+     * The collected values after this rule's transformations. A value that
+     * a transformation empties is dropped, like a value collected empty.
+     *
+     * @param array{0: list<?string>, 1: list<string>, 2: int} $untransformed
+     * @return array{0: array{0: list<?string>, 1: list<string>, 2: int}, 1: bool}
+     */
+    private function transform(RequestVariableValues $requestVariableValues, array $untransformed): array
+    {
+        $transformationPipeline = $this->transformationPipeline;
+        if (!$transformationPipeline instanceof TransformationPipeline) {
+            return [$untransformed, true];
+        }
+
+        if ($this->multiMatch) {
+            return [$this->stages($transformationPipeline, $untransformed), false];
+        }
+
+        $transformed = $requestVariableValues->transformed($transformationPipeline, $untransformed[1]);
+        if ($transformed === null) {
+            // Nothing to transform in any of the values, as in most requests.
+            return [$untransformed, true];
+        }
+
+        $labels = [];
+        $values = [];
+        $longestValue = 0;
+        foreach ($transformed as $index => $value) {
+            if ($value === '') {
+                continue;
+            }
+
+            $labels[] = $untransformed[0][$index] ?? null;
+            $values[] = $value;
+            $longestValue = max($longestValue, strlen($value));
+        }
+
+        return [[$labels, $values, $longestValue], $requestVariableValues->keepsTransformedValues()];
+    }
+
+    /**
+     * What a `multiMatch` rule hands to its operator: every value as
+     * collected and after each transformation that changes it. These are
+     * worked out for the one rule and not counted against the memory of the
+     * request, so they are not kept for further rules either.
+     *
+     * @param array{0: list<?string>, 1: list<string>, 2: int} $untransformed
+     * @return array{0: list<?string>, 1: list<string>, 2: int}
+     */
+    private function stages(TransformationPipeline $transformationPipeline, array $untransformed): array
+    {
+        $labels = [];
+        $values = [];
+        $longestValue = 0;
+        // A parameter name is collected as a name and as a member of ARGS; its stages are the same.
+        $stagesByValue = [];
+        foreach ($untransformed[1] as $index => $value) {
+            foreach ($stagesByValue[$value] ??= $transformationPipeline->stages($value) as $stage) {
+                if ($stage === '') {
+                    continue;
+                }
+
+                $labels[] = $untransformed[0][$index] ?? null;
+                $values[] = $stage;
+                $longestValue = max($longestValue, strlen($stage));
+            }
+        }
+
+        return [$labels, $values, $longestValue];
     }
 
     /**

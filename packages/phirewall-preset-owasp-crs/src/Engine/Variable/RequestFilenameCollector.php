@@ -15,8 +15,8 @@ use Psr\Http\Message\ServerRequestInterface;
  * slash-bearing @pmFromFile token (directory prefixes like `.git/`, leading-slash
  * secret-file names like `/auth.json`) could never match, silently disabling the
  * bulk of the restricted-files/AI-artifact rules (930130/930140). Returning the
- * full path restores upstream semantics; the value is the raw PSR-7 path (no
- * transformation, consistent with the rest of the engine).
+ * full path restores upstream semantics; the value is the PSR-7 path as it is,
+ * percent-encoding included. Decoding it is up to the rule (`t:urlDecodeUni`).
  */
 final readonly class RequestFilenameCollector implements VariableCollectorInterface
 {

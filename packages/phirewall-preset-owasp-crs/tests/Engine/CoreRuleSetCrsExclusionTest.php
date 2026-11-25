@@ -133,6 +133,23 @@ final class CoreRuleSetCrsExclusionTest extends TestCase
         $this->assertTrue($coreRuleSet->evaluate($regularRequest)->isBlocked(), 'The removal does not leak into other requests');
     }
 
+    public function testAnExclusionConditionAppliesItsTransformations(): void
+    {
+        $asWritten = new CoreRuleSet([$this->argsRule(400020)]);
+        $asWritten->applyRuleExclusions(
+            'SecRule REQUEST_URI "@beginsWith /health" "id:410004,phase:1,pass,nolog,t:none,ctl:ruleRemoveById=400020"',
+        );
+        $decoded = new CoreRuleSet([$this->argsRule(400020)]);
+        $decoded->applyRuleExclusions(
+            'SecRule REQUEST_URI "@beginsWith /health" "id:410005,phase:1,pass,nolog,t:none,t:urlDecodeUni,ctl:ruleRemoveById=400020"',
+        );
+
+        $encodedPath = (new ServerRequest('GET', 'https://example.test/%68ealth'))->withQueryParams(['q' => 'suspicious']);
+
+        $this->assertSame([400020], $asWritten->evaluate($encodedPath)->matchedRuleIds());
+        $this->assertSame([], $decoded->evaluate($encodedPath)->matchedRuleIds());
+    }
+
     public function testFailClosedConditionDoesNotArmTheExclusion(): void
     {
         $coreRuleSet = new CoreRuleSet([$this->argsRule(400019)]);

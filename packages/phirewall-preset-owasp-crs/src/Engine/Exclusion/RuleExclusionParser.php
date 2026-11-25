@@ -8,6 +8,7 @@ use Flowd\PhirewallPresetOwaspCrs\Engine\CoreRule;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Operator\OperatorEvaluatorFactory;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Operator\UnsupportedOperatorEvaluator;
 use Flowd\PhirewallPresetOwaspCrs\Engine\SecRuleParser;
+use Flowd\PhirewallPresetOwaspCrs\Engine\Transformation\Transformation;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Variable\TargetSelector;
 use Flowd\PhirewallPresetOwaspCrs\Import\LogicalLineSplitter;
 
@@ -99,8 +100,8 @@ final class RuleExclusionParser
             throw new \InvalidArgumentException('Chained exclusion rules are not supported: ' . $this->excerpt($line));
         }
 
-        // A condition with an unsupported operator or variable would never (or
-        // only partially) match, silently leaving the exclusion dead: reject it.
+        // A condition with an unsupported operator, variable or transformation would
+        // never (or only partially) match, silently leaving the exclusion dead: reject it.
         $operatorEvaluator = OperatorEvaluatorFactory::create($rule->operator, $rule->operatorArgument, $contextFolder);
         if ($operatorEvaluator instanceof UnsupportedOperatorEvaluator) {
             throw new \InvalidArgumentException(
@@ -112,6 +113,14 @@ final class RuleExclusionParser
             if (!TargetSelector::tryParse($variable) instanceof TargetSelector) {
                 throw new \InvalidArgumentException(
                     sprintf('Unsupported variable "%s" in exclusion rule condition: %s', $variable, $this->excerpt($line)),
+                );
+            }
+        }
+
+        foreach ($rule->transformations as $transformation) {
+            if (!Transformation::isSupported($transformation)) {
+                throw new \InvalidArgumentException(
+                    sprintf('Unsupported transformation "%s" in exclusion rule condition: %s', $transformation, $this->excerpt($line)),
                 );
             }
         }
@@ -143,6 +152,8 @@ final class RuleExclusionParser
             $rule->severity,
             $rule->paranoiaLevel,
             $rule->tags,
+            null,
+            $rule->transformations,
         );
 
         return new ExclusionRule($condition, $ctlExclusions);
