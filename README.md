@@ -156,11 +156,8 @@ which are what Packagist reads, are not affected.
 tag. If a job fails after the push, "Re-run failed jobs" fails again with `tag already exists` in that
 mirror: delete the tag in the mirror (the GitHub App may bypass the tag ruleset) and re-run only that job.
 
-**Rehearsing the split.** `split.yml` can be started by hand (Actions > Split > Run workflow). A manual run
-writes to the test repositories `flowd/phirewall-test-1` to `-4` (core, owasp-crs, bots, bad-ips) and never
-to the mirrors. Each test repository needs one initial commit, because the split action cannot push into a
-completely empty repository. Run it with a throw-away tag (`0.0.1-test`) and `ref` `main`, check the content
-and the tag, and delete the tags before the next run.
+**The mirror of a new package** needs one initial commit before the first release: the split action cannot
+push into a completely empty repository.
 
 ## Contributing and security
 

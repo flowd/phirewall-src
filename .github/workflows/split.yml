@@ -2,26 +2,12 @@ name: Split
 
 # Publishes the packages to their read-only mirror repositories (the ones Packagist
 # watches). Called by release.yml: the mirrors only receive release tags.
-#
-# It can also be started by hand, but only as a rehearsal against the test repositories
-# flowd/phirewall-test-1 to -4 (see the Releases section of the README). A manual run never touches the mirrors.
 on:
   workflow_call:
     inputs:
       tag:
         description: 'Release tag, e.g. 0.11.0'
         required: true
-        type: string
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Tag to create in the test repositories, e.g. 0.0.1-test'
-        required: true
-        type: string
-      ref:
-        description: 'Branch, tag or commit of this repository to split'
-        required: true
-        default: main
         type: string
     secrets:
       APP_ID:
@@ -40,23 +26,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - package: phirewall
-            test_repository: phirewall-test-1
-          - package: phirewall-preset-owasp-crs
-            test_repository: phirewall-test-2
-          - package: phirewall-preset-bots
-            test_repository: phirewall-test-3
-          - package: phirewall-preset-bad-ips
-            test_repository: phirewall-test-4
-    env:
-      # Called by release.yml: the mirror. Started by hand: the test repository.
-      MIRROR: ${{ github.event_name == 'workflow_dispatch' && matrix.test_repository || matrix.package }}
+        # Each package is published to the mirror of the same name.
+        package:
+          - phirewall
+          - phirewall-preset-owasp-crs
+          - phirewall-preset-bots
+          - phirewall-preset-bad-ips
     steps:
       - name: Checkout the tagged commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref || inputs.tag }}
+          ref: ${{ inputs.tag }}
           fetch-depth: 0
 
       # Short-lived token limited to the mirror of this matrix entry.
@@ -67,7 +47,7 @@ jobs:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: flowd
-          repositories: ${{ env.MIRROR }}
+          repositories: ${{ matrix.package }}
 
       - name: Split ${{ matrix.package }}
         uses: danharrin/monorepo-split-github-action@14e42e2437f674b8987c1f50ca3689116aea1893 # v2.4.5
@@ -78,7 +58,7 @@ jobs:
         with:
           package_directory: packages/${{ matrix.package }}
           repository_organization: flowd
-          repository_name: ${{ env.MIRROR }}
+          repository_name: ${{ matrix.package }}
           branch: main
           tag: ${{ inputs.tag }}
           user_name: github-actions[bot]
@@ -92,8 +72,8 @@ jobs:
           TAG: ${{ inputs.tag }}
           PACKAGE: ${{ matrix.package }}
         run: |
-          if gh release view "${TAG}" --repo "flowd/${MIRROR}" >/dev/null 2>&1; then
-            echo "Release ${TAG} already exists in ${MIRROR}."
+          if gh release view "${TAG}" --repo "flowd/${PACKAGE}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists in ${PACKAGE}."
             exit 0
           fi
           notes="$(awk -v tag="${TAG}" '
@@ -104,4 +84,4 @@ jobs:
             [[ -z "${notes//[[:space:]]/}" ]] || printf '%s\n\n' "${notes}"
             echo "Released together with the other Phirewall packages, see the [release in flowd/phirewall-src](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}). This repository is a read-only mirror."
           } > "${RUNNER_TEMP}/notes.md"
-          gh release create "${TAG}" --repo "flowd/${MIRROR}" --verify-tag --title "${TAG}" --notes-file "${RUNNER_TEMP}/notes.md"
+          gh release create "${TAG}" --repo "flowd/${PACKAGE}" --verify-tag --title "${TAG}" --notes-file "${RUNNER_TEMP}/notes.md"
