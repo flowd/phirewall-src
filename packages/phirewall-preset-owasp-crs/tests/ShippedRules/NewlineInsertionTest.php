@@ -127,6 +127,12 @@ final class NewlineInsertionTest extends TestCase
                 continue;
             }
 
+            // Nor are the raw-* vectors, which carry a value a strict PSR-7
+            // implementation refuses (tests/HostileServerRequest.php).
+            if (str_starts_with($entry['vector'], 'raw-')) {
+                continue;
+            }
+
             $payload = base64_decode($entry['payload_base64'], true);
             if (!is_string($payload)) {
                 continue;

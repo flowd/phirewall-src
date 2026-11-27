@@ -11,6 +11,11 @@ declare(strict_types=1);
  * that must not sit raw in PHP source. 'unreachable' lists rules that cannot be
  * triggered through a normalized PSR-7 request, with the reason.
  *
+ * A raw-header:<NAME> or raw-method vector marks a rule that only a request a
+ * strict PSR-7 implementation refuses to build can trigger (a control character
+ * in a header value, a method that is not an HTTP token); the tests deliver it
+ * through Tests\HostileServerRequest.
+ *
  * Do not edit by hand; regenerate after an import.
  *
  * @return array{
@@ -26,8 +31,8 @@ return [
         913100 => ['vector' => 'header_ua', 'payload_base64' => 'YXJhY2huaQ=='],
         920210 => ['vector' => 'header:CONNECTION', 'payload_base64' => 'Y2xvc2Usa2VlcC1hbGl2ZQ=='],
         920230 => ['vector' => 'args', 'payload_base64' => 'JUQw'],
-        920290 => ['vector' => 'header:Host', 'payload_base64' => 'Cg=='],
-        920330 => ['vector' => 'header_ua', 'payload_base64' => 'Cg=='],
+        920290 => ['vector' => 'raw-header:Host', 'payload_base64' => 'Cg=='],
+        920330 => ['vector' => 'raw-header:User-Agent', 'payload_base64' => 'Cg=='],
         920350 => ['vector' => 'header:HOST', 'payload_base64' => 'NQ=='],
         920460 => ['vector' => 'args', 'payload_base64' => 'XGU='],
         920500 => ['vector' => 'filename', 'payload_base64' => 'Lm5QeH4='],
@@ -36,7 +41,7 @@ return [
         921110 => ['vector' => 'args', 'payload_base64' => 'cHJvcGF0Y2ggCwticEcgC2h0dHAvNQ=='],
         921120 => ['vector' => 'args', 'payload_base64' => 'CilzZXQtY29va2llOgtQ'],
         921130 => ['vector' => 'args', 'payload_base64' => 'PG1ldGE='],
-        921140 => ['vector' => 'header_referer', 'payload_base64' => 'Cg=='],
+        921140 => ['vector' => 'raw-header:Referer', 'payload_base64' => 'Cg=='],
         921150 => ['vector' => 'args_names', 'payload_base64' => 'DQ=='],
         921190 => ['vector' => 'filename', 'payload_base64' => 'YSUwYWI='],
         921200 => ['vector' => 'args', 'payload_base64' => 'aDVjKSkoCwsgfCAL'],
