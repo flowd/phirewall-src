@@ -30,6 +30,9 @@ final readonly class Middleware implements MiddlewareInterface
 
     public function process(ServerRequestInterface $serverRequest, RequestHandlerInterface $requestHandler): ResponseInterface
     {
+        // The request the handler gets says how the rules read it, so that its own code reads it the same way.
+        $serverRequest = Http\RequestView::withServerParameterInspection($serverRequest, $this->config->inspectsServerParameters());
+
         try {
             $firewallResult = $this->firewall->decide($serverRequest);
         } catch (\Throwable $throwable) {

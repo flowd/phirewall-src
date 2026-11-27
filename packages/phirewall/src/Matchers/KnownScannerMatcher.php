@@ -6,6 +6,7 @@ namespace Flowd\Phirewall\Matchers;
 
 use Flowd\Phirewall\Config\MatchResult;
 use Flowd\Phirewall\Config\RequestMatcherInterface;
+use Flowd\Phirewall\Http\RequestView;
 use Psr\Http\Message\ServerRequestInterface;
 
 /**
@@ -85,15 +86,13 @@ final readonly class KnownScannerMatcher implements RequestMatcherInterface
 
     public function match(ServerRequestInterface $serverRequest): MatchResult
     {
-        $userAgent = strtolower($serverRequest->getHeaderLine('User-Agent'));
-
-        if ($userAgent === '') {
-            return MatchResult::noMatch();
-        }
-
-        foreach ($this->patterns as $pattern) {
-            if (str_contains($userAgent, $pattern)) {
-                return MatchResult::matched('known_scanner', ['ua_pattern' => $pattern]);
+        // Also the User-Agent of the server parameters when the PSR-7 request holds another or none.
+        foreach (RequestView::of($serverRequest)->header('User-Agent') as $userAgent) {
+            $userAgent = strtolower($userAgent);
+            foreach ($this->patterns as $pattern) {
+                if (str_contains($userAgent, $pattern)) {
+                    return MatchResult::matched('known_scanner', ['ua_pattern' => $pattern]);
+                }
             }
         }
 

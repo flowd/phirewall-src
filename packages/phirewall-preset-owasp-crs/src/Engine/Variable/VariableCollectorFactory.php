@@ -11,15 +11,18 @@ final class VariableCollectorFactory
 {
     /**
      * Resolve a single variable name to its collector, or null when the variable is unsupported.
+     *
+     * @param bool $inspectBodiesWithoutContentType For `ARGS` and `ARGS_NAMES`; see
+     *                                              {@see \Flowd\PhirewallPresetOwaspCrs\Engine\CoreRuleSet::inspectBodiesWithoutContentType()}.
      */
-    public static function create(string $variableName): ?VariableCollectorInterface
+    public static function create(string $variableName, bool $inspectBodiesWithoutContentType = true): ?VariableCollectorInterface
     {
         return match ($variableName) {
             'REQUEST_URI' => new RequestUriCollector(),
             'REQUEST_METHOD' => new RequestMethodCollector(),
             'QUERY_STRING' => new QueryStringCollector(),
-            'ARGS' => new ArgsCollector(),
-            'ARGS_NAMES' => new ArgsNamesCollector(),
+            'ARGS' => new ArgsCollector($inspectBodiesWithoutContentType),
+            'ARGS_NAMES' => new ArgsNamesCollector($inspectBodiesWithoutContentType),
             'REQUEST_COOKIES' => new RequestCookiesCollector(),
             'REQUEST_COOKIES_NAMES' => new RequestCookiesNamesCollector(),
             'REQUEST_HEADERS' => new RequestHeadersCollector(),

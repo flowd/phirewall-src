@@ -24,27 +24,31 @@ final class BotsPresetBench
 {
     private Firewall $firewall;
 
-    private ServerRequestInterface $serverRequest;
+    /** @var list<ServerRequestInterface> */
+    private array $pageViews;
+
+    /** Which of the unseen requests the next call takes, see {@see Requests::unseen()}. */
+    private int $call = 0;
 
     #[Before]
     public function buildFirewall(): void
     {
-        $this->serverRequest = Requests::pageView();
+        $this->pageViews = Requests::unseen(Requests::pageView(...));
         $this->firewall = new Firewall($this->config());
 
-        Outcome::mustPass($this->firewall->decide($this->serverRequest));
+        Outcome::mustPass($this->firewall->decide(Requests::pageView()));
     }
 
     #[Expected(instructions: '37.89K', cycles: '54.10K', memory: '1.016KiB')]
     public function benchBrowserInAWorker(): void
     {
-        $this->firewall->decide($this->serverRequest);
+        $this->firewall->decide($this->pageViews[$this->call++]);
     }
 
     #[Expected(instructions: '281.7K', cycles: '370.0K', memory: '12.52KiB')]
     public function benchBrowserPerRequest(): void
     {
-        (new Firewall($this->config()))->decide($this->serverRequest);
+        (new Firewall($this->config()))->decide($this->pageViews[$this->call++]);
     }
 
     private function config(): Config

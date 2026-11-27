@@ -453,6 +453,104 @@ inspects only that header, and negated selectors such as `!REQUEST_HEADERS:Cooki
 variable. Selectors of unsupported variables (`XML:/*`, `REQUEST_BODY`) collect
 nothing; the rule evaluates against its supported targets only.
 
+### What the Variables Hold
+
+A variable holds the values of the PSR-7 request and, after them, what the server
+parameters of the request (`getServerParams()`, under PHP-FPM a copy of `$_SERVER`) hold
+beyond it. A PSR-7 library may refuse, drop or rewrite what the client sent, while code
+of your application that reads `$_SERVER` still gets it; the rules inspect both.
+
+| Variable | From the PSR-7 request | Added from the server parameters |
+|----------|------------------------|----------------------------------|
+| `REQUEST_HEADERS`, `REQUEST_HEADERS_NAMES` | `getHeaders()` | `HTTP_*`, `CONTENT_TYPE`, `CONTENT_LENGTH`: a header the request does not hold, or holds with another value |
+| `REQUEST_METHOD` | `getMethod()` | `REQUEST_METHOD` when it is another |
+| `REQUEST_URI`, `REQUEST_FILENAME` | `getUri()` | `REQUEST_URI` when it names another address, such as the one before a rewrite |
+| `QUERY_STRING` | `getUri()->getQuery()` | `QUERY_STRING` and the query string of `REQUEST_URI` when they are others |
+| `ARGS`, `ARGS_NAMES` | `getQueryParams()`, `getParsedBody()` | Parameters of the query strings that `getQueryParams()` does not show, and of a form body (or a body without a content type) that `getParsedBody()` does not show |
+| `REQUEST_COOKIES`, `REQUEST_COOKIES_NAMES` | `getCookieParams()` | Cookies of the `Cookie` headers that `getCookieParams()` does not show |
+
+What `getQueryParams()` and `getCookieParams()` do not show is what PHP loses when it
+parses: of `?comment=<script>...&comment=hello` PHP keeps the last `comment`, of two
+cookies of one name the first, a name such as `my.field` or `a[` becomes `my_field`
+and `a_`, and a value without a name (`?=value`) is dropped. The other value and the
+name as it was written are inspected too. So are all parameters and cookies of a request
+whose `getQueryParams()` or `getCookieParams()` were never filled in.
+
+What stays as it was:
+
+- **A request on which both sides agree is inspected as before.** Only values the
+  PSR-7 request does not hold are added. An address that differs only in its
+  percent-encoding is the same address: a browser sends `/photo[1].jpg`, the library
+  makes it `/photo%5B1%5D.jpg`, and nothing is added.
+- **Exclusions keep working.** A hidden value carries the name the request shows for its
+  parameter, so `excludeTarget('ARGS:comment')` covers every `comment` of the query
+  string.
+- **Only the body of a form is read** (`application/x-www-form-urlencoded`, or a body that
+  names no content type at all, which symfony/http-foundation 7 below PHP 8.4 and yii2
+  parse as a form), to compare it with `getParsedBody()` as the query string is compared
+  with `getQueryParams()`: the
+  first of two fields of one name, a name PHP rewrites, and every field when the body was
+  never parsed. PHP parses the form of a `POST` only, so with most libraries the fields of
+  a `PUT` or `PATCH` form were not inspected before and are now. The body is left at the
+  position it was at. A body of another type (JSON, XML, `multipart/form-data`) is not
+  read, nor a stream that is not seekable or one of slim/psr7 (it would hand the body to
+  the application twice); their parameters come from `getParsedBody()` alone, and one
+  longer than `post_max_size` by its size or its `Content-Length` fails closed unread.
+- **A runtime that leaves the server parameters empty** (some long-running workers) gives
+  the rules the PSR-7 request; the query string and the `Cookie` header of the request
+  itself are still compared with its parsed parameters.
+
+What can match now and did not before:
+
+- **More parameters than `max_input_vars` fail closed.** PHP reads that many from a query
+  string, a `Cookie` header or a form body and drops the rest. A rule on `ARGS`,
+  `ARGS_NAMES`, `REQUEST_COOKIES` or `REQUEST_COOKIES_NAMES` blocks such a request, as it
+  does for a variable beyond the [per-variable value cap](#per-variable-value-cap). A
+  request that shows more parameters than that, in a runtime that parses them itself, is
+  read in full. So does a form body of more than `post_max_size` bytes, which PHP does not
+  parse either; `post_max_size = 0` is no limit here as well. A long-running worker that
+  accepts larger forms than its PHP configuration says needs that setting raised.
+- **A body without a content type is inspected as a form.** A file sent that way
+  (`curl -T`) becomes the names and values of fields: text with line breaks matches a rule
+  on `ARGS_NAMES` at paranoia level 1, and binary data or more than the
+  [inspectable length](#per-value-length-cap) without an `&` fails closed. Such an upload
+  passes when the client names its content type (`application/octet-stream`), or with
+  `inspectBodiesWithoutContentType(false)` (below).
+- **What a middleware changed before the firewall is inspected as the client sent it.** A
+  middleware that decodes or cleans query parameters, or a proxy filter that replaces
+  `Host` with `X-Forwarded-Host`, leaves the original in the server parameters. Run the
+  firewall before such middleware, exclude the target, or inspect the PSR-7 request alone.
+- **A server parameter cannot tell `X-Token` from `X_Token`.** Its value is inspected under
+  every header of the request that reads so.
+
+A variable of the process environment that is named like a header (`HTTP_PROXY` in a
+container) is in `$_SERVER` under PHP-FPM; it is not taken for a header.
+
+To inspect the PSR-7 request alone, as before 0.12:
+
+```php
+use Flowd\PhirewallPresetOwaspCrs\Engine\CoreRuleSetMatcher;
+
+$config = $config->with(Presets::blocklist(
+    ParanoiaLevel::Level1,
+    configure: static fn (CoreRuleSetMatcher $matcher) => $matcher->inspectServerParameters(false),
+));
+```
+
+`$config->inspectServerParameters(false)` does the same for [every rule of the firewall](/features/safelists-blocklists#two-readings), these included.
+
+To read a body as a form only when its content type says so, and not a body that names
+none:
+
+```php
+$config = $config->with(Presets::blocklist(
+    ParanoiaLevel::Level1,
+    configure: static fn (CoreRuleSetMatcher $matcher) => $matcher->inspectBodiesWithoutContentType(false),
+));
+```
+
+The same view is available to your own rules as `Flowd\Phirewall\Http\RequestView::of($request)`.
+
 ### Operators
 
 | Operator | Syntax | Description |
@@ -829,6 +927,8 @@ Each CRS variable maps to a `VariableCollectorInterface` implementation:
 
 Each entry carries the member name it belongs to (parameter, cookie or header name)
 so selectors and exclusions can address it; unnamed variables use `name: null`.
+The collectors read the request through its `RequestView`, see
+[What the Variables Hold](#what-the-variables-hold).
 
 The set of supported variables is fixed: `VariableCollectorFactory` resolves these names and nothing else. A rule targeting any other variable collects no values, so that target never matches.
 

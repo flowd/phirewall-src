@@ -6,6 +6,7 @@ namespace Flowd\Phirewall\Matchers;
 
 use Flowd\Phirewall\Config\MatchResult;
 use Flowd\Phirewall\Config\RequestMatcherInterface;
+use Flowd\Phirewall\Http\RequestView;
 use Psr\Http\Message\ServerRequestInterface;
 
 /**
@@ -13,7 +14,9 @@ use Psr\Http\Message\ServerRequestInterface;
  *
  * Many attack tools and scrapers omit headers like Accept, Accept-Language,
  * or Accept-Encoding. Note that some privacy tools, embedded browsers, and
- * API clients may also omit these headers legitimately.
+ * API clients may also omit these headers legitimately. A header counts as
+ * sent when the PSR-7 request or the server parameters hold it; a header of
+ * another name (`Accept_Language`) does not stand in for it.
  *
  * Ships with a curated default header set. Passing your own list to the
  * constructor replaces the defaults; to extend them, merge your headers with
@@ -57,8 +60,9 @@ final readonly class SuspiciousHeadersMatcher implements RequestMatcherInterface
 
     public function match(ServerRequestInterface $serverRequest): MatchResult
     {
+        $requestView = RequestView::of($serverRequest);
         foreach ($this->requiredHeaders as $requiredHeader) {
-            if ($serverRequest->getHeaderLine($requiredHeader) === '') {
+            if ($requestView->headerLines($requiredHeader)[0] === '' && $requestView->serverHeader($requiredHeader) === null) {
                 return MatchResult::matched('suspicious_headers', ['missing' => $requiredHeader]);
             }
         }

@@ -16,11 +16,12 @@ use Flowd\Phirewall\Config\Rule\SafelistRule;
 use Flowd\Phirewall\Config\Rule\ThrottleRule;
 use Flowd\Phirewall\Config\Rule\TrackRule;
 use Flowd\Phirewall\ConfigLayer;
-use Flowd\Phirewall\Http\PathNormalizer;
+use Flowd\Phirewall\Http\RequestView;
 use Flowd\Phirewall\KeyExtractors;
 use Flowd\Phirewall\Matchers\IpMatcher;
 use Flowd\Phirewall\Matchers\KnownScannerMatcher;
 use Flowd\Phirewall\Matchers\Support\PathMatcher;
+use Flowd\Phirewall\Matchers\Support\Readings;
 use Flowd\Phirewall\Matchers\Support\RegexMatcher;
 use Flowd\Phirewall\Matchers\SuspiciousHeadersMatcher;
 use Flowd\Phirewall\Pattern\InMemoryPatternBackend;
@@ -60,7 +61,7 @@ use Psr\Http\Message\ServerRequestInterface;
  * @phpstan-type SchemaTracks list<array{name: string, period: int, filter: Filter, key: Key, limit?: int}>
  * @phpstan-type SchemaPatternBackends list<array{name: string, entries: list<PatternEntryArray>}>
  * @phpstan-type SchemaPatternBlocklists list<array{name: string, backend: string}>
- * @phpstan-type SchemaOptions array{rateLimitHeaders?: bool, responseHeaders?: bool, diagnosticsHeaders?: bool, owaspDiagnosticsHeader?: bool, failOpen?: bool, blockOnSignalBan?: bool, keyPrefix?: string}
+ * @phpstan-type SchemaOptions array{rateLimitHeaders?: bool, responseHeaders?: bool, diagnosticsHeaders?: bool, owaspDiagnosticsHeader?: bool, failOpen?: bool, blockOnSignalBan?: bool, inspectServerParameters?: bool, keyPrefix?: string}
  * @phpstan-type Schema array{
  *   safelists: SchemaSafelists,
  *   blocklists: SchemaBlocklists,
@@ -168,6 +169,16 @@ final class PortableConfig implements ConfigLayer
     public function enableBlockOnSignalBan(bool $enabled = true): self
     {
         $this->schema['options']['blockOnSignalBan'] = $enabled;
+        return $this;
+    }
+
+    /**
+     * Whether the rules also read the server parameters of a request.
+     * Mirrors {@see Config::inspectServerParameters()}.
+     */
+    public function inspectServerParameters(bool $inspect = true): self
+    {
+        $this->schema['options']['inspectServerParameters'] = $inspect;
         return $this;
     }
 
@@ -661,6 +672,11 @@ final class PortableConfig implements ConfigLayer
             throw new \InvalidArgumentException('PortableConfig option "blockOnSignalBan" must be a boolean.');
         }
 
+        // A mistyped value must not leave the rules on fewer readings of the request than asked for, nor on more.
+        if (array_key_exists('inspectServerParameters', $options) && !is_bool($options['inspectServerParameters'])) {
+            throw new \InvalidArgumentException('PortableConfig option "inspectServerParameters" must be a boolean.');
+        }
+
         $self->schema['options'] = $options;
         // Validate content. Every section entry must be a JSON object; a scalar
         // (or other non-array) from decoded JSON is a malformed transport payload
@@ -925,6 +941,10 @@ final class PortableConfig implements ConfigLayer
             $config->enableBlockOnSignalBan($options['blockOnSignalBan']);
         }
 
+        if (array_key_exists('inspectServerParameters', $options)) {
+            $config->inspectServerParameters($options['inspectServerParameters']);
+        }
+
         if (isset($options['keyPrefix']) && is_string($options['keyPrefix'])) {
             $config->setKeyPrefix($options['keyPrefix']);
         }
@@ -1039,38 +1059,45 @@ final class PortableConfig implements ConfigLayer
             // ($permissive) never matches an ambiguous path, see PathMatcher.
             'path_equals' => (static function () use ($filter, $permissive): \Closure {
                 $path = PathMatcher::compileLiteral((string)($filter['path'] ?? '/'));
-                return static fn(ServerRequestInterface $serverRequest): bool => PathMatcher::equals(PathNormalizer::fromRequest($serverRequest), $path, $permissive);
+                return static fn(ServerRequestInterface $serverRequest): bool => PathMatcher::equals(RequestView::of($serverRequest)->normalizedPaths(), $path, $permissive);
             })(),
             'path_prefix' => (static function () use ($filter, $permissive): \Closure {
                 $prefix = PathMatcher::compileLiteral((string)($filter['prefix'] ?? ''));
-                return static fn(ServerRequestInterface $serverRequest): bool => PathMatcher::startsWith(PathNormalizer::fromRequest($serverRequest), $prefix, $permissive);
+                return static fn(ServerRequestInterface $serverRequest): bool => PathMatcher::startsWith(RequestView::of($serverRequest)->normalizedPaths(), $prefix, $permissive);
             })(),
             'path_regex' => (static function () use ($filter, $permissive): \Closure {
                 $pattern = RegexMatcher::compile((string)($filter['pattern'] ?? ''));
                 $matches = static fn(string $subject): bool => RegexMatcher::matches($pattern, $subject);
-                return static fn(ServerRequestInterface $serverRequest): bool => PathMatcher::matchesRegex(PathNormalizer::fromRequest($serverRequest), $matches, $permissive);
+                return static fn(ServerRequestInterface $serverRequest): bool => PathMatcher::matchesRegex(RequestView::of($serverRequest)->normalizedPaths(), $matches, $permissive);
             })(),
-            'method_equals' => static function (ServerRequestInterface $serverRequest) use ($filter): bool {
+            // Method and header filters test every reading of the request (RequestView):
+            // one match is enough to restrict, a safelist needs all of them to match.
+            'method_equals' => (static function () use ($filter, $permissive): \Closure {
                 $method = strtoupper((string)($filter['method'] ?? ''));
-                return strtoupper($serverRequest->getMethod()) === $method;
-            },
-            'method_in' => (static function () use ($filter): \Closure {
-                $methods = array_map(static fn(string $method): string => strtoupper($method), self::toStringList($filter['methods'] ?? []));
-                return static fn(ServerRequestInterface $serverRequest): bool => in_array(strtoupper($serverRequest->getMethod()), $methods, true);
+                $matches = static fn(string $requestMethod): bool => strtoupper($requestMethod) === $method;
+                return static fn(ServerRequestInterface $serverRequest): bool => Readings::match(RequestView::of($serverRequest)->methods(), $matches, $permissive);
             })(),
-            'header_equals' => static function (ServerRequestInterface $serverRequest) use ($filter): bool {
+            'method_in' => (static function () use ($filter, $permissive): \Closure {
+                $methods = array_map(static fn(string $method): string => strtoupper($method), self::toStringList($filter['methods'] ?? []));
+                $matches = static fn(string $requestMethod): bool => in_array(strtoupper($requestMethod), $methods, true);
+                return static fn(ServerRequestInterface $serverRequest): bool => Readings::match(RequestView::of($serverRequest)->methods(), $matches, $permissive);
+            })(),
+            'header_equals' => (static function () use ($filter, $permissive): \Closure {
                 $name = (string)($filter['name'] ?? '');
                 $value = (string)($filter['value'] ?? '');
-                return $name !== '' && hash_equals($value, $serverRequest->getHeaderLine($name));
-            },
-            'header_present' => static function (ServerRequestInterface $serverRequest) use ($filter): bool {
+                $matches = static fn(string $line): bool => hash_equals($value, $line);
+                return static fn(ServerRequestInterface $serverRequest): bool => $name !== '' && Readings::match(RequestView::of($serverRequest)->headerLines($name), $matches, $permissive);
+            })(),
+            'header_present' => (static function () use ($filter, $permissive): \Closure {
                 $name = (string)($filter['name'] ?? '');
-                return $name !== '' && $serverRequest->getHeaderLine($name) !== '';
-            },
-            'header_regex' => (static function () use ($filter): \Closure {
+                $matches = static fn(string $line): bool => $line !== '';
+                return static fn(ServerRequestInterface $serverRequest): bool => $name !== '' && Readings::match(RequestView::of($serverRequest)->headerLines($name), $matches, $permissive);
+            })(),
+            'header_regex' => (static function () use ($filter, $permissive): \Closure {
                 $name = (string)($filter['name'] ?? '');
                 $pattern = RegexMatcher::compile((string)($filter['pattern'] ?? ''));
-                return static fn(ServerRequestInterface $serverRequest): bool => $name !== '' && RegexMatcher::matches($pattern, $serverRequest->getHeaderLine($name));
+                $matches = static fn(string $line): bool => RegexMatcher::matches($pattern, $line);
+                return static fn(ServerRequestInterface $serverRequest): bool => $name !== '' && Readings::match(RequestView::of($serverRequest)->headerLines($name), $matches, $permissive);
             })(),
             'all' => static fn(ServerRequestInterface $serverRequest): bool => true,
             'none' => static fn(ServerRequestInterface $serverRequest): bool => false,

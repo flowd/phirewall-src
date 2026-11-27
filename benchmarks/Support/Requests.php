@@ -35,6 +35,27 @@ final class Requests
     {
     }
 
+    /**
+     * Request objects no decision has seen, one for each call of a benchmark
+     * (its warm-up calls and the counted one). The firewall keeps what it
+     * worked out about a request for as long as the request object lives, so
+     * a decision on an object it has decided on before does less work than
+     * one in production, where every request is a new object.
+     *
+     * @param \Closure(): ServerRequestInterface $build
+     *
+     * @return list<ServerRequestInterface>
+     */
+    public static function unseen(\Closure $build): array
+    {
+        $serverRequests = [];
+        for ($call = 0; $call < 8; ++$call) {
+            $serverRequests[] = $build();
+        }
+
+        return $serverRequests;
+    }
+
     /** A page view with a few query parameters and cookies. */
     public static function pageView(string $clientIp = self::CLIENT_IP): ServerRequestInterface
     {

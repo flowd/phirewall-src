@@ -381,6 +381,32 @@ final class CoreRuleSetMatcher implements RequestMatcherInterface, CompiledDataC
     }
 
     /**
+     * Whether the rules also inspect the server parameters of the request; see
+     * {@see CoreRuleSet::inspectServerParameters()}.
+     */
+    public function inspectServerParameters(bool $inspect): self
+    {
+        $this->configure(static function (CoreRuleSet $coreRuleSet) use ($inspect): void {
+            $coreRuleSet->inspectServerParameters($inspect);
+        });
+
+        return $this;
+    }
+
+    /**
+     * Whether a body that names no content type is inspected as a form; see
+     * {@see CoreRuleSet::inspectBodiesWithoutContentType()}.
+     */
+    public function inspectBodiesWithoutContentType(bool $inspect = true): self
+    {
+        $this->configure(static function (CoreRuleSet $coreRuleSet) use ($inspect): void {
+            $coreRuleSet->inspectBodiesWithoutContentType($inspect);
+        });
+
+        return $this;
+    }
+
+    /**
      * Apply a configuration step now, or queue it until the rule set is loaded.
      *
      * @param \Closure(CoreRuleSet): void $configuration

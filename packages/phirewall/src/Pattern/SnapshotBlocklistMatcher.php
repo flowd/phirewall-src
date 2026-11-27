@@ -8,6 +8,7 @@ use Flowd\Phirewall\Config\MatchResult;
 use Flowd\Phirewall\Config\RequestMatcherInterface;
 use Flowd\Phirewall\Http\NormalizedPath;
 use Flowd\Phirewall\Http\PathNormalizer;
+use Flowd\Phirewall\Http\RequestView;
 use Flowd\Phirewall\Matchers\ClientIpResolverAware;
 use Flowd\Phirewall\Matchers\FailOpenAware;
 use Flowd\Phirewall\Matchers\Support\CidrMatcher;
@@ -97,9 +98,11 @@ final class SnapshotBlocklistMatcher implements RequestMatcherInterface, ClientI
         $patternSnapshot = $this->loadSnapshot();
         $ip = $resolver($serverRequest);
         // Path entries match the normalised path or the raw path (PathMatcher's
-        // restrictive mode): this matcher only ever blocks.
-        $requestPath = PathNormalizer::fromRequest($serverRequest);
-        $query = $serverRequest->getUri()->getQuery();
+        // restrictive mode), header entries any value of a header, and each in
+        // every reading of the request (RequestView): this matcher only ever blocks.
+        $requestView = null;
+        $requestPaths = null;
+        $requestSubjects = null;
 
         // Pre-compute binary IP once (used by CIDR matching)
         $ipBinary = ($ip !== null) ? @inet_pton($ip) : false;
@@ -131,13 +134,15 @@ final class SnapshotBlocklistMatcher implements RequestMatcherInterface, ClientI
 
                     break;
                 case PatternKind::PATH_EXACT:
-                    if ($compiled instanceof NormalizedPath && PathMatcher::equals($requestPath, $compiled, false)) {
+                    $requestPaths ??= ($requestView ??= RequestView::of($serverRequest))->normalizedPaths();
+                    if ($compiled instanceof NormalizedPath && PathMatcher::equals($requestPaths, $compiled, false)) {
                         return MatchResult::matched('pattern_backend', ['kind' => $entry->kind->value, 'value' => $entry->value]);
                     }
 
                     break;
                 case PatternKind::PATH_PREFIX:
-                    if ($compiled instanceof NormalizedPath && PathMatcher::startsWith($requestPath, $compiled, false)) {
+                    $requestPaths ??= ($requestView ??= RequestView::of($serverRequest))->normalizedPaths();
+                    if ($compiled instanceof NormalizedPath && PathMatcher::startsWith($requestPaths, $compiled, false)) {
                         return MatchResult::matched('pattern_backend', ['kind' => $entry->kind->value, 'value' => $entry->value]);
                     }
 
@@ -145,16 +150,15 @@ final class SnapshotBlocklistMatcher implements RequestMatcherInterface, ClientI
                 case PatternKind::PATH_REGEX:
                     $pathPattern = is_string($compiled) ? $compiled : null;
                     $matchesPath = fn(string $subject): bool => $this->matchesRegex($pathPattern, $subject);
-                    if (PathMatcher::matchesRegex($requestPath, $matchesPath, false)) {
+                    $requestPaths ??= ($requestView ??= RequestView::of($serverRequest))->normalizedPaths();
+                    if (PathMatcher::matchesRegex($requestPaths, $matchesPath, false)) {
                         return MatchResult::matched('pattern_backend', ['kind' => $entry->kind->value, 'value' => $entry->value]);
                     }
 
                     break;
                 case PatternKind::HEADER_EXACT:
-                    // PSR-7 getHeader() is case-insensitive, so look up only the
-                    // target header instead of normalizing the whole header map.
                     $headerName = $entry->target ?? '';
-                    if ($headerName !== '' && $this->headerValuesEqual($serverRequest->getHeader($headerName), $entry->value)) {
+                    if ($headerName !== '' && $this->headerValuesEqual(($requestView ??= RequestView::of($serverRequest))->header($headerName), $entry->value)) {
                         return MatchResult::matched('pattern_backend', ['kind' => $entry->kind->value, 'value' => $entry->value, 'target' => $headerName]);
                     }
 
@@ -162,26 +166,20 @@ final class SnapshotBlocklistMatcher implements RequestMatcherInterface, ClientI
                 case PatternKind::HEADER_REGEX:
                     $headerName = $entry->target ?? '';
                     $headerPattern = is_string($compiled) ? $compiled : null;
-                    if ($headerName !== '' && $this->headerValuesMatch($serverRequest->getHeader($headerName), $headerPattern)) {
+                    if ($headerName !== '' && $this->headerValuesMatch(($requestView ??= RequestView::of($serverRequest))->header($headerName), $headerPattern)) {
                         return MatchResult::matched('pattern_backend', ['kind' => $entry->kind->value, 'value' => $entry->value, 'target' => $headerName]);
                     }
 
                     break;
                 case PatternKind::REQUEST_REGEX:
-                    // Only REQUEST_REGEX needs the full normalized header map; build
-                    // it lazily once, and only when such an entry is actually present.
-                    $normalizedHeaders ??= $this->normalizeHeaders($serverRequest->getHeaders());
-                    // Two subjects, as for PATH_REGEX: one with the normalised path,
-                    // one with the raw path (built only when the two differ).
-                    $requestSubject ??= $this->buildRequestSubject($requestPath->normalized, $query, $normalizedHeaders);
-                    $rawRequestSubject ??= $requestPath->raw === $requestPath->normalized
-                        ? null
-                        : $this->buildRequestSubject($requestPath->raw, $query, $normalizedHeaders);
+                    // Only REQUEST_REGEX needs the subjects; build them lazily once,
+                    // and only when such an entry is actually present.
+                    $requestSubjects ??= $this->requestSubjects($serverRequest, $requestView ??= RequestView::of($serverRequest));
                     $requestPattern = is_string($compiled) ? $compiled : null;
-                    if ($this->matchesRegex($requestPattern, $requestSubject)
-                        || ($rawRequestSubject !== null && $this->matchesRegex($requestPattern, $rawRequestSubject))
-                    ) {
-                        return MatchResult::matched('pattern_backend', ['kind' => $entry->kind->value, 'value' => $entry->value]);
+                    foreach ($requestSubjects as $requestSubject) {
+                        if ($this->matchesRegex($requestPattern, $requestSubject)) {
+                            return MatchResult::matched('pattern_backend', ['kind' => $entry->kind->value, 'value' => $entry->value]);
+                        }
                     }
 
                     break;
@@ -249,7 +247,7 @@ final class SnapshotBlocklistMatcher implements RequestMatcherInterface, ClientI
     }
 
     /**
-     * @param array<string> $values Header values as returned by PSR-7 getHeader().
+     * @param array<string> $values The values of one header ({@see RequestView::header()}).
      */
     private function headerValuesEqual(array $values, string $expected): bool
     {
@@ -257,7 +255,7 @@ final class SnapshotBlocklistMatcher implements RequestMatcherInterface, ClientI
     }
 
     /**
-     * @param array<string> $values Header values as returned by PSR-7 getHeader().
+     * @param array<string> $values The values of one header ({@see RequestView::header()}).
      */
     private function headerValuesMatch(array $values, ?string $pattern): bool
     {
@@ -275,21 +273,59 @@ final class SnapshotBlocklistMatcher implements RequestMatcherInterface, ClientI
     }
 
     /**
-     * @param array<string, array<int, string>> $headers
-     * @return array<string, array<int, string>>
+     * The subjects of a REQUEST_REGEX entry: one for each address of the
+     * request (that of its PSR-7 URI, and those its server parameters name
+     * besides) with the normalised path, and one with the raw path where the
+     * two differ, as for PATH_REGEX. Each with the headers of the PSR-7
+     * request alone, so a pattern that counts on their order or on the end of
+     * the subject matches as it did, and once more with every header value
+     * the request holds in either reading when those are more.
+     *
+     * @return list<string>
+     */
+    private function requestSubjects(ServerRequestInterface $serverRequest, RequestView $requestView): array
+    {
+        $headerSets = [$this->normalizeHeaders($serverRequest->getHeaders())];
+        $inEitherReading = [];
+        foreach ($requestView->headers() as $name => $values) {
+            $name = strtolower((string) $name);
+            $inEitherReading[$name] = [...($inEitherReading[$name] ?? []), ...$values];
+        }
+
+        if ($inEitherReading !== $headerSets[0]) {
+            $headerSets[] = $inEitherReading;
+        }
+
+        $subjects = [];
+        foreach ($requestView->addresses() as $address) {
+            $requestPath = PathNormalizer::analyze($address['path']);
+            foreach ($headerSets as $headerSet) {
+                $subjects[] = $this->buildRequestSubject($requestPath->normalized, $address['query'], $headerSet);
+                if ($requestPath->raw !== $requestPath->normalized) {
+                    $subjects[] = $this->buildRequestSubject($requestPath->raw, $address['query'], $headerSet);
+                }
+            }
+        }
+
+        return array_values(array_unique($subjects));
+    }
+
+    /**
+     * @param array<array-key, array<array-key, string>> $headers
+     * @return array<string, list<string>>
      */
     private function normalizeHeaders(array $headers): array
     {
         $normalized = [];
         foreach ($headers as $name => $values) {
-            $normalized[strtolower($name)] = $values;
+            $normalized[strtolower((string) $name)] = array_values($values);
         }
 
         return $normalized;
     }
 
     /**
-     * @param array<string, array<int,string>> $headers
+     * @param array<string, list<string>> $headers
      */
     private function buildRequestSubject(string $path, string $query, array $headers): string
     {

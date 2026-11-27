@@ -28,11 +28,17 @@ final class CrsPresetBench
 {
     private Firewall $firewall;
 
-    private ServerRequestInterface $pageView;
+    /** @var list<ServerRequestInterface> */
+    private array $pageViews;
 
-    private ServerRequestInterface $formPost;
+    /** @var list<ServerRequestInterface> */
+    private array $formPosts;
 
-    private ServerRequestInterface $sqlInjection;
+    /** @var list<ServerRequestInterface> */
+    private array $sqlInjections;
+
+    /** Which of the unseen requests the next call takes, see {@see Requests::unseen()}. */
+    private int $call = 0;
 
     public function __construct(private readonly Meter $meter, private readonly ScratchDirectory $scratchDirectory)
     {
@@ -43,32 +49,32 @@ final class CrsPresetBench
     {
         PhpFpm::requireOpcache();
 
-        $this->pageView = Requests::pageView();
-        $this->formPost = Requests::formPost();
-        $this->sqlInjection = Requests::sqlInjection();
+        $this->pageViews = Requests::unseen(Requests::pageView(...));
+        $this->formPosts = Requests::unseen(Requests::formPost(...));
+        $this->sqlInjections = Requests::unseen(Requests::sqlInjection(...));
         $this->firewall = new Firewall($this->config($this->compiledDataCache()));
 
-        Outcome::mustPass($this->firewall->decide($this->pageView));
-        Outcome::mustPass($this->firewall->decide($this->formPost));
-        Outcome::mustBlock($this->firewall->decide($this->sqlInjection));
+        Outcome::mustPass($this->firewall->decide(Requests::pageView()));
+        Outcome::mustPass($this->firewall->decide(Requests::formPost()));
+        Outcome::mustBlock($this->firewall->decide(Requests::sqlInjection()));
     }
 
     #[Expected(instructions: '7.275M', cycles: '8.240M', memory: '111.0KiB')]
     public function benchPageViewInAWorker(): void
     {
-        $this->firewall->decide($this->pageView);
+        $this->firewall->decide($this->pageViews[$this->call++]);
     }
 
     #[Expected(instructions: '12.22M', cycles: '13.46M', memory: '149.1KiB')]
     public function benchFormPostInAWorker(): void
     {
-        $this->firewall->decide($this->formPost);
+        $this->firewall->decide($this->formPosts[$this->call++]);
     }
 
     #[Expected(instructions: '5.242M', cycles: '6.186M', memory: '91.63KiB')]
     public function benchSqlInjectionInAWorker(): void
     {
-        $this->firewall->decide($this->sqlInjection);
+        $this->firewall->decide($this->sqlInjections[$this->call++]);
     }
 
     /** The rule files are parsed on every request. */
@@ -77,7 +83,7 @@ final class CrsPresetBench
     {
         $this->meter->exclude(PhpFpm::startRequest(...));
 
-        (new Firewall($this->config(null)))->decide($this->pageView);
+        (new Firewall($this->config(null)))->decide($this->pageViews[$this->call++]);
     }
 
     /** The parsed rules come from the compiled-data cache. */
@@ -86,7 +92,7 @@ final class CrsPresetBench
     {
         $this->meter->exclude(PhpFpm::startRequest(...));
 
-        (new Firewall($this->config($this->compiledDataCache())))->decide($this->pageView);
+        (new Firewall($this->config($this->compiledDataCache())))->decide($this->pageViews[$this->call++]);
     }
 
     private function config(?CompiledDataCache $compiledDataCache): Config

@@ -422,10 +422,13 @@ process therefore ships only the CRS rules that the engine can evaluate faithful
 
 Further engine differences to be aware of:
 
-- **Bodies are inspected only as parsed arguments.** Query and form parameters are
-  examined as `ARGS`; the engine does not parse raw JSON/XML bodies or inspect
-  uploaded files (no `REQUEST_BODY`/`XML`/`FILES` collection), so a payload that
-  appears only there is not seen.
+- **Bodies are inspected only as arguments.** Query and form parameters are
+  examined as `ARGS`: those of `getParsedBody()`, and those the body of a form
+  (`application/x-www-form-urlencoded`, or a body without a content type, which
+  some frameworks parse as a form; `inspectBodiesWithoutContentType(false)` leaves
+  that out) holds besides. The engine does not parse
+  raw JSON/XML bodies or inspect uploaded files (no `REQUEST_BODY`/`XML`/`FILES`
+  collection), so a payload that appears only there is not seen.
 - **Transformations.** The operator of a rule reads each collected value after the
   rule's transformations (`t:urlDecodeUni`, `t:htmlEntityDecode`, `t:lowercase`, ...),
   applied in the order the rule lists them; `t:none` drops the ones before it, and a

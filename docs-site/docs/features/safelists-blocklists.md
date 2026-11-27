@@ -505,6 +505,33 @@ Not normalised, by design:
 
 Closures you write yourself receive the raw request. Call `PathNormalizer::normalize($req->getUri()->getPath())` in blocklist-style closures; in safelist closures prefer an exact comparison on the raw path, or check `PathNormalizer::analyze($path)->ambiguous` first.
 
+## Two Readings of a Request {#two-readings}
+
+A request reaches the firewall twice: as the PSR-7 request your library built, and as the server parameters it was built from (`getServerParams()`, under PHP-FPM a copy of `$_SERVER`). They differ when the library dropped or rewrote a value it does not accept, or a middleware in front of the firewall changed the request, and the application can read either. Every built-in rule therefore reads both:
+
+| Rule | PSR-7 request | Server parameters |
+|------|---------------|-------------------|
+| `path_equals`, `path_prefix`, `path_regex`, `PATH_*` pattern kinds | `getUri()->getPath()` | Path of `REQUEST_URI` |
+| `method_equals`, `method_in` | `getMethod()` | `REQUEST_METHOD` |
+| `header_equals`, `header_present`, `header_regex`, `HEADER_*` pattern kinds, `knownScanners()`, `suspiciousHeaders()`, trusted bots | The header | `HTTP_*`, `CONTENT_TYPE`, `CONTENT_LENGTH`; a header of the request whose name differs only in `-` and `_` |
+| `REQUEST_REGEX` pattern kind | Path, query string and headers | `REQUEST_URI`, `QUERY_STRING`, the headers above |
+| [OWASP rules](/features/owasp-crs#what-the-variables-hold) | Every variable | See there |
+
+- **A rule that restricts** (blocklist, Fail2Ban / Allow2Ban filter, throttle scope, track) matches when **one** reading matches.
+- **A safelist** matches only when **every** reading matches: a request is not let through for the reading your application does not use. That includes the [ambiguous paths](#path-normalisation) a library hides: most libraries turn a `REQUEST_URI` of `//health` into the path `/health`, and a safelist for `/health` does not apply to it.
+- **`suspiciousHeaders()`** counts a header as sent when the PSR-7 request or the server parameters hold it under its own name.
+- **A value that has to be one** is taken from the PSR-7 request, and from the other reading when the PSR-7 request has none: the `header`, `hashed_header` and `method` keys (a server parameter, or a header whose name differs only in `-` and `_`), and the `X-Forwarded-For` / `Forwarded` chain of `TrustedProxyResolver` (the server parameter). The `path` key is the path of the PSR-7 request.
+
+A request on which both readings agree is decided as before. A path or query string that differs only in what a library percent-encodes (`/photo[1].jpg` and `/photo%5B1%5D.jpg`) counts as the same, and a variable of the process environment named like a header (`HTTP_PROXY` in a container) is not a header. A runtime that leaves the server parameters empty gives the rules the PSR-7 request.
+
+The readings also differ where a framework or a middleware in front of the firewall rewrites the request on purpose: a path prefix it strips, or a method it overrides (the Symfony PSR-7 bridge gives a `POST` with `X-HTTP-Method-Override: PUT` as `PUT`, so a rule for `POST` and a rule for `PUT` both match it, and a safelist for either does not). When your rules are written for the rewritten request alone, turn the server parameters off. This covers every rule, the OWASP rules included:
+
+```php
+$config->inspectServerParameters(false);
+```
+
+Closures you write yourself receive the PSR-7 request; `Flowd\Phirewall\Http\RequestView::of($request)` gives them both readings (`paths()`, `methods()`, `headerLines($name)`, `header($name)`), or the PSR-7 request alone when the server parameters are turned off. The same holds for the request the middleware hands to your application.
+
 ## IP Resolution {#ip-resolution}
 
 Both `safelists->ip()` and `blocklists->ip()` respect the global IP resolver set on the Config object. This is important when your application runs behind a reverse proxy or load balancer.

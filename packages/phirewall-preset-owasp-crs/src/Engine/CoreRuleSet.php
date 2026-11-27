@@ -49,6 +49,10 @@ final class CoreRuleSet
     /** Longest single value an operator inspects; a longer value fails closed. See {@see setMaxInspectableValueLength()}. */
     private int $maxInspectableValueLength = CoreRule::MAX_INSPECTABLE_VALUE_LENGTH;
 
+    private bool $inspectsServerParameters = true;
+
+    private bool $inspectsBodiesWithoutContentType = true;
+
     /**
      * @param iterable<CoreRule> $rules
      * @param int|null $maxValuesPerCrsVariable Per-variable value cap applied while evaluating a
@@ -269,6 +273,36 @@ final class CoreRuleSet
     }
 
     /**
+     * Whether the rules also inspect what the server parameters of the request hold
+     * (`getServerParams()`: `REQUEST_URI`, `QUERY_STRING`, `HTTP_*`) and the PSR-7 request
+     * does not show: a header the PSR-7 implementation dropped, the address before the
+     * library normalised it, the first of two parameters of one name. On by default; see
+     * {@see \Flowd\Phirewall\Http\RequestView}. With false the rules inspect the PSR-7
+     * request alone.
+     */
+    public function inspectServerParameters(bool $inspect): self
+    {
+        $this->inspectsServerParameters = $inspect;
+
+        return $this;
+    }
+
+    /**
+     * Whether a body for which no reading of the request names a content type is
+     * inspected as a form (`ARGS`, `ARGS_NAMES`), as symfony/http-foundation 7 below
+     * PHP 8.4 and yii2 parse it. On by default: an upload sent without a content type
+     * is then read as form fields too. With false only a body of type
+     * `application/x-www-form-urlencoded` is. Without the server parameters
+     * ({@see inspectServerParameters()}) no body is read at all.
+     */
+    public function inspectBodiesWithoutContentType(bool $inspect = true): self
+    {
+        $this->inspectsBodiesWithoutContentType = $inspect;
+
+        return $this;
+    }
+
+    /**
      * Evaluate the request against all enabled rules with anomaly scoring.
      *
      * Rules are evaluated in insertion order; each match adds the rule's
@@ -292,7 +326,7 @@ final class CoreRuleSet
         }
 
         // Collect each distinct variable once and share it across every rule for this request.
-        $requestVariableValues = new RequestVariableValues($serverRequest, $this->maxValuesPerCrsVariable);
+        $requestVariableValues = new RequestVariableValues($serverRequest, $this->maxValuesPerCrsVariable, $this->inspectsServerParameters, $this->inspectsBodiesWithoutContentType);
         $runtimeExclusions = $this->evaluateExclusionRules($serverRequest, $requestVariableValues);
         $ruleTargetSession = $this->ruleTargetConfig->isEmpty() && !$runtimeExclusions instanceof RuntimeExclusions
             ? null

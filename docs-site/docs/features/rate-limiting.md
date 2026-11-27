@@ -236,7 +236,7 @@ Phirewall ships with common key extractors for typical rate limiting scenarios:
 
 The client IP is the default key when `key:` is omitted - no extractor needed. Set proxy trust once with `$config->setIpResolver((new TrustedProxyResolver([...]))->resolve(...))` and all keyless rules key on the resolved client IP automatically.
 
-All extractors except `path()` return `null` when the value is missing or empty, which causes the throttle rule to be skipped for that request.
+All extractors except `path()` return `null` when the value is missing or empty, which causes the throttle rule to be skipped for that request. `header()`, `hashedHeader()`, `userAgent()` and `method()` take the value of the PSR-7 request, and that of the other reading when the PSR-7 request has none, see [Two Readings of a Request](/features/safelists-blocklists#two-readings).
 
 Prefer `hashedHeader()` over `header()` whenever the header carries a credential (`Authorization`, `Cookie`, `X-Api-Key`, …). The cache backend and ban registry then store the sha256 fingerprint rather than the raw secret, so anyone with read access to the cache cannot recover the credential.
 

@@ -157,4 +157,33 @@ final class KnownScannerMatcherTest extends TestCase
         $knownScannerMatcher = new KnownScannerMatcher(['  sqlmap  ']);
         $this->assertTrue($knownScannerMatcher->match($this->makeRequest('sqlmap/1.0'))->isMatch());
     }
+
+    public function testAUserAgentOnlyTheServerParametersHoldMatches(): void
+    {
+        $knownScannerMatcher = new KnownScannerMatcher();
+
+        // A PSR-7 library that refuses the control character leaves the request without the header.
+        $dropped = new ServerRequest('GET', '/', [], null, '1.1', ['HTTP_USER_AGENT' => "sqlmap/1.8\x01"]);
+        $this->assertTrue($knownScannerMatcher->match($dropped)->isMatch());
+
+        $replaced = new ServerRequest('GET', '/', ['User-Agent' => 'Mozilla/5.0'], null, '1.1', ['HTTP_USER_AGENT' => 'Nikto/2.5']);
+        $this->assertTrue($knownScannerMatcher->match($replaced)->isMatch());
+
+        $same = new ServerRequest('GET', '/', ['User-Agent' => 'Mozilla/5.0'], null, '1.1', ['HTTP_USER_AGENT' => 'Mozilla/5.0']);
+        $this->assertFalse($knownScannerMatcher->match($same)->isMatch());
+    }
+
+    public function testAHeaderWrittenWithAnUnderscoreDoesNotCoverTheUserAgent(): void
+    {
+        $serverRequest = new ServerRequest('GET', '/', ['User_Agent' => 'Mozilla/5.0', 'User-Agent' => 'sqlmap/1.8']);
+
+        $this->assertTrue((new KnownScannerMatcher())->match($serverRequest)->isMatch());
+    }
+
+    public function testEveryUserAgentLineIsRead(): void
+    {
+        $serverRequest = (new ServerRequest('GET', '/'))->withHeader('User-Agent', ['Mozilla/5.0', 'sqlmap/1.8']);
+
+        $this->assertTrue((new KnownScannerMatcher())->match($serverRequest)->isMatch());
+    }
 }

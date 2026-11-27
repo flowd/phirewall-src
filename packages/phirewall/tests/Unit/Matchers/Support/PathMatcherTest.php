@@ -21,29 +21,29 @@ final class PathMatcherTest extends TestCase
 
     public function testRestrictiveModeMatchesNormalisedOrRaw(): void
     {
-        $this->assertTrue(PathMatcher::equals(PathNormalizer::analyze('/%61dmin'), PathMatcher::compileLiteral('/admin'), false));
-        $this->assertTrue(PathMatcher::equals(PathNormalizer::analyze('/a/../admin'), PathMatcher::compileLiteral('/admin'), false));
+        $this->assertTrue(PathMatcher::equals([PathNormalizer::analyze('/%61dmin')], PathMatcher::compileLiteral('/admin'), false));
+        $this->assertTrue(PathMatcher::equals([PathNormalizer::analyze('/a/../admin')], PathMatcher::compileLiteral('/admin'), false));
         // Raw form as written: the value normalises to `/` but the raw path matches literally.
-        $this->assertTrue(PathMatcher::equals(PathNormalizer::analyze('/x/..'), PathMatcher::compileLiteral('/x/..'), false));
-        $this->assertTrue(PathMatcher::startsWith(PathNormalizer::analyze('/admin\\..\\public'), PathMatcher::compileLiteral('/admin'), false));
-        $this->assertFalse(PathMatcher::startsWith(PathNormalizer::analyze('/api'), PathMatcher::compileLiteral('/admin'), false));
+        $this->assertTrue(PathMatcher::equals([PathNormalizer::analyze('/x/..')], PathMatcher::compileLiteral('/x/..'), false));
+        $this->assertTrue(PathMatcher::startsWith([PathNormalizer::analyze('/admin\\..\\public')], PathMatcher::compileLiteral('/admin'), false));
+        $this->assertFalse(PathMatcher::startsWith([PathNormalizer::analyze('/api')], PathMatcher::compileLiteral('/admin'), false));
     }
 
     public function testPermissiveModeRefusesAmbiguousPaths(): void
     {
         $public = PathMatcher::compileLiteral('/public/');
 
-        $this->assertTrue(PathMatcher::startsWith(PathNormalizer::analyze('/%70ublic/x'), $public, true));
-        $this->assertFalse(PathMatcher::startsWith(PathNormalizer::analyze('/admin/../public/x'), $public, true));
-        $this->assertFalse(PathMatcher::equals(PathNormalizer::analyze('/public//'), $public, true));
-        $this->assertFalse(PathMatcher::matchesRegex(PathNormalizer::analyze('/public/./x'), static fn(string $subject): bool => true, true));
+        $this->assertTrue(PathMatcher::startsWith([PathNormalizer::analyze('/%70ublic/x')], $public, true));
+        $this->assertFalse(PathMatcher::startsWith([PathNormalizer::analyze('/admin/../public/x')], $public, true));
+        $this->assertFalse(PathMatcher::equals([PathNormalizer::analyze('/public//')], $public, true));
+        $this->assertFalse(PathMatcher::matchesRegex([PathNormalizer::analyze('/public/./x')], static fn(string $subject): bool => true, true));
     }
 
     public function testEmptyPrefixNeverMatches(): void
     {
         $empty = PathMatcher::compileLiteral('');
-        $this->assertFalse(PathMatcher::startsWith(PathNormalizer::analyze('/anything'), $empty, false));
-        $this->assertFalse(PathMatcher::startsWith(PathNormalizer::analyze('/anything'), $empty, true));
+        $this->assertFalse(PathMatcher::startsWith([PathNormalizer::analyze('/anything')], $empty, false));
+        $this->assertFalse(PathMatcher::startsWith([PathNormalizer::analyze('/anything')], $empty, true));
     }
 
     public function testRestrictiveRegexChecksRawOnlyWhenItDiffers(): void
@@ -54,11 +54,40 @@ final class PathMatcherTest extends TestCase
             return false;
         };
 
-        PathMatcher::matchesRegex(PathNormalizer::analyze('/plain'), $record, false);
+        PathMatcher::matchesRegex([PathNormalizer::analyze('/plain')], $record, false);
         $this->assertSame(['/plain'], $subjects);
 
         $subjects = [];
-        PathMatcher::matchesRegex(PathNormalizer::analyze('/%70lain'), $record, false);
+        PathMatcher::matchesRegex([PathNormalizer::analyze('/%70lain')], $record, false);
         $this->assertSame(['/plain', '/%70lain'], $subjects);
+    }
+
+    public function testARestrictiveRuleMatchesWhenOneOfThePathsOfARequestMatches(): void
+    {
+        $admin = PathMatcher::compileLiteral('/admin');
+        $paths = [PathNormalizer::analyze('/health'), PathNormalizer::analyze('/admin/users')];
+
+        $this->assertTrue(PathMatcher::startsWith($paths, $admin, false));
+        $this->assertTrue(PathMatcher::equals($paths, PathMatcher::compileLiteral('/health'), false));
+        $this->assertTrue(PathMatcher::matchesRegex($paths, static fn(string $subject): bool => $subject === '/admin/users', false));
+        $this->assertFalse(PathMatcher::startsWith($paths, PathMatcher::compileLiteral('/api'), false));
+    }
+
+    public function testAPermissiveRuleMatchesOnlyWhenEveryPathOfARequestMatches(): void
+    {
+        $health = PathMatcher::compileLiteral('/health');
+
+        $this->assertFalse(PathMatcher::equals([PathNormalizer::analyze('/health'), PathNormalizer::analyze('/admin')], $health, true));
+        $this->assertFalse(PathMatcher::startsWith([PathNormalizer::analyze('/health'), PathNormalizer::analyze('/admin')], $health, true));
+        $this->assertFalse(PathMatcher::matchesRegex(
+            [PathNormalizer::analyze('/health'), PathNormalizer::analyze('/admin')],
+            static fn(string $subject): bool => $subject === '/health',
+            true,
+        ));
+        // Two spellings of the same unambiguous path.
+        $this->assertTrue(PathMatcher::equals([PathNormalizer::analyze('/health'), PathNormalizer::analyze('/he%61lth')], $health, true));
+        // One of them ambiguous: the safelist does not apply.
+        $this->assertFalse(PathMatcher::equals([PathNormalizer::analyze('/health'), PathNormalizer::analyze('/x/../health')], $health, true));
+        $this->assertFalse(PathMatcher::equals([], $health, true));
     }
 }

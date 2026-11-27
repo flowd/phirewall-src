@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Flowd\PhirewallPresetOwaspCrs\Engine\Variable;
 
+use Flowd\Phirewall\Http\RequestView;
 use Psr\Http\Message\ServerRequestInterface;
 
 /**
@@ -17,14 +18,21 @@ use Psr\Http\Message\ServerRequestInterface;
  * bulk of the restricted-files/AI-artifact rules (930130/930140). Returning the
  * full path restores upstream semantics; the value is the PSR-7 path as it is,
  * percent-encoding included. Decoding it is up to the rule (`t:urlDecodeUni`).
+ * The path of `REQUEST_URI` of the server parameters is collected too when it
+ * is written differently.
  */
 final readonly class RequestFilenameCollector implements VariableCollectorInterface
 {
     /** @return list<array{name: ?string, value: string}> */
-    public function collect(ServerRequestInterface $serverRequest): array
+    public function collect(ServerRequestInterface $serverRequest, ?RequestView $requestView = null): array
     {
-        $path = $serverRequest->getUri()->getPath();
+        $collected = [];
+        foreach (($requestView ?? RequestView::of($serverRequest))->paths() as $path) {
+            if ($path !== '') {
+                $collected[] = ['name' => null, 'value' => $path];
+            }
+        }
 
-        return $path !== '' ? [['name' => null, 'value' => $path]] : [];
+        return $collected;
     }
 }

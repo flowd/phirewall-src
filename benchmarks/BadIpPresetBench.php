@@ -32,9 +32,14 @@ final class BadIpPresetBench
 
     private Firewall $firewall;
 
-    private ServerRequestInterface $unlistedClient;
+    /** @var list<ServerRequestInterface> */
+    private array $unlistedClients;
 
-    private ServerRequestInterface $listedClient;
+    /** @var list<ServerRequestInterface> */
+    private array $listedClients;
+
+    /** Which of the unseen requests the next call takes, see {@see Requests::unseen()}. */
+    private int $call = 0;
 
     public function __construct(private readonly Meter $meter, private readonly ScratchDirectory $scratchDirectory)
     {
@@ -52,25 +57,26 @@ final class BadIpPresetBench
             file_put_contents($this->dataFile(), "# Generated for the benchmarks.\n" . implode("\n", $addresses) . "\n");
         }
 
-        $this->unlistedClient = Requests::pageView();
-        $this->listedClient = Requests::pageView($addresses[self::ADDRESSES - 1]);
+        $listedAddress = $addresses[self::ADDRESSES - 1];
+        $this->unlistedClients = Requests::unseen(Requests::pageView(...));
+        $this->listedClients = Requests::unseen(static fn(): ServerRequestInterface => Requests::pageView($listedAddress));
         $this->firewall = new Firewall($this->config(null));
 
-        Outcome::mustPass($this->firewall->decide($this->unlistedClient));
-        Outcome::mustBlock($this->firewall->decide($this->listedClient));
-        Outcome::mustPass((new Firewall($this->config($this->compiledDataCache())))->decide($this->unlistedClient));
+        Outcome::mustPass($this->firewall->decide(Requests::pageView()));
+        Outcome::mustBlock($this->firewall->decide(Requests::pageView($listedAddress)));
+        Outcome::mustPass((new Firewall($this->config($this->compiledDataCache())))->decide(Requests::pageView()));
     }
 
     #[Expected(instructions: '28.15K', cycles: '39.06K', memory: '1.008KiB')]
     public function benchUnlistedClientInAWorker(): void
     {
-        $this->firewall->decide($this->unlistedClient);
+        $this->firewall->decide($this->unlistedClients[$this->call++]);
     }
 
     #[Expected(instructions: '25.27K', cycles: '36.60K', memory: '1.617KiB')]
     public function benchListedClientInAWorker(): void
     {
-        $this->firewall->decide($this->listedClient);
+        $this->firewall->decide($this->listedClients[$this->call++]);
     }
 
     /** The list is read and parsed on every request. */
@@ -79,7 +85,7 @@ final class BadIpPresetBench
     {
         $this->meter->exclude(PhpFpm::startRequest(...));
 
-        (new Firewall($this->config(null)))->decide($this->unlistedClient);
+        (new Firewall($this->config(null)))->decide($this->unlistedClients[$this->call++]);
     }
 
     /** The parsed list comes from the compiled-data cache. */
@@ -88,7 +94,7 @@ final class BadIpPresetBench
     {
         $this->meter->exclude(PhpFpm::startRequest(...));
 
-        (new Firewall($this->config($this->compiledDataCache())))->decide($this->unlistedClient);
+        (new Firewall($this->config($this->compiledDataCache())))->decide($this->unlistedClients[$this->call++]);
     }
 
     private function config(?CompiledDataCache $compiledDataCache): Config

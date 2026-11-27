@@ -205,7 +205,7 @@ final readonly class TrustedProxyResolver
         // treated identically. The security boundary is the right-to-left walk
         // in resolve() that skips trusted hops and stops at the first untrusted
         // hop, not the separation between header instances.
-        $header = $this->flattenHeaderInstances($serverRequest->getHeader('X-Forwarded-For'));
+        $header = $this->flattenHeaderInstances($this->headerInstances($serverRequest, 'X-Forwarded-For'));
         if ($header === null) {
             return [];
         }
@@ -230,7 +230,7 @@ final readonly class TrustedProxyResolver
         // it is that hop (every `for=` to its right is trusted); spoof-resistance
         // relies on a genuine untrusted hop to its right and correct trusted
         // ranges, not on the header's instance layout.
-        $header = $this->flattenHeaderInstances($serverRequest->getHeader('Forwarded'));
+        $header = $this->flattenHeaderInstances($this->headerInstances($serverRequest, 'Forwarded'));
         if ($header === null) {
             return [];
         }
@@ -262,6 +262,27 @@ final readonly class TrustedProxyResolver
         }
 
         return array_reverse($ips);
+    }
+
+    /**
+     * The instances of a forwarding header: those of the PSR-7 request, and
+     * what the server parameters hold when it has none. A library that does
+     * not accept a value a client put in front of the chain drops the whole
+     * header, the entry of the trusted proxy with it; the walk in resolve()
+     * decides on the chain as it arrived.
+     *
+     * @return array<string>
+     */
+    private function headerInstances(ServerRequestInterface $serverRequest, string $name): array
+    {
+        $instances = $serverRequest->getHeader($name);
+        if ($this->flattenHeaderInstances($instances) !== null) {
+            return $instances;
+        }
+
+        $written = RequestView::of($serverRequest)->serverHeader($name);
+
+        return $written === null ? $instances : [$written];
     }
 
     /**

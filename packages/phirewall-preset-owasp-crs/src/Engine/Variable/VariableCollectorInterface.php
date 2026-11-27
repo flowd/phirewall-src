@@ -4,10 +4,15 @@ declare(strict_types=1);
 
 namespace Flowd\PhirewallPresetOwaspCrs\Engine\Variable;
 
+use Flowd\Phirewall\Http\RequestView;
 use Psr\Http\Message\ServerRequestInterface;
 
 /**
- * Collects target values from a PSR-7 request for a specific OWASP CRS variable type.
+ * Collects target values from a request for a specific OWASP CRS variable type.
+ *
+ * A collector reads the request through its {@see RequestView}: the values of
+ * the PSR-7 request first, then those of the server parameters the request
+ * does not hold.
  */
 interface VariableCollectorInterface
 {
@@ -19,7 +24,9 @@ interface VariableCollectorInterface
      * value IS a member name injected for inspection (the ARGS hardening entries)
      * is flagged with `isNameEntry`.
      *
+     * @param RequestView|null $requestView The view to collect from; the view of $serverRequest when null.
+     *
      * @return list<array{name: ?string, value: string, isNameEntry?: bool}>
      */
-    public function collect(ServerRequestInterface $serverRequest): array;
+    public function collect(ServerRequestInterface $serverRequest, ?RequestView $requestView = null): array;
 }
