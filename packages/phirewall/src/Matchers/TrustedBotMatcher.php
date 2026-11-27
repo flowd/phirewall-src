@@ -6,6 +6,7 @@ namespace Flowd\Phirewall\Matchers;
 
 use Flowd\Phirewall\Config\MatchResult;
 use Flowd\Phirewall\Config\RequestMatcherInterface;
+use Flowd\Phirewall\Http\RequestView;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\SimpleCache\CacheInterface;
 
@@ -136,8 +137,9 @@ final class TrustedBotMatcher implements RequestMatcherInterface, ClientIpResolv
 
     public function matchWithResolver(ServerRequestInterface $serverRequest, callable $defaultResolver): MatchResult
     {
-        $userAgent = strtolower($serverRequest->getHeaderLine('User-Agent'));
-        if ($userAgent === '') {
+        // A safelist: every reading of the header has to name the bot (RequestView).
+        $userAgents = array_map(strtolower(...), RequestView::of($serverRequest)->headerLines('User-Agent'));
+        if ($userAgents[0] === '') {
             return MatchResult::noMatch();
         }
 
@@ -148,8 +150,15 @@ final class TrustedBotMatcher implements RequestMatcherInterface, ClientIpResolv
         }
 
         foreach ($this->bots as $bot) {
-            if (!str_contains($userAgent, strtolower($bot['ua']))) {
+            $botUserAgent = strtolower($bot['ua']);
+            if (!str_contains($userAgents[0], $botUserAgent)) {
                 continue;
+            }
+
+            foreach ($userAgents as $userAgent) {
+                if (!str_contains($userAgent, $botUserAgent)) {
+                    return MatchResult::noMatch();
+                }
             }
 
             if ($this->verifyBot($ip, $bot['hostname'])) {

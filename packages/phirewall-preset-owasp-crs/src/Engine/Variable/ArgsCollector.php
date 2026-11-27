@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Flowd\PhirewallPresetOwaspCrs\Engine\Variable;
 
+use Flowd\Phirewall\Http\RequestView;
 use Psr\Http\Message\ServerRequestInterface;
 
 /**
@@ -19,20 +20,47 @@ use Psr\Http\Message\ServerRequestInterface;
  * {@see RequestVariableValues}, so this collector does not truncate: truncating here would drop a
  * parameter's name while keeping its value (a half-collected parameter) and hide the overflow from
  * the fail-closed check.
+ *
+ * After them come the parameters the query strings hold and getQueryParams() does not show
+ * ({@see RequestView::hiddenQueryParameters()}), and those the body of a form request holds
+ * and getParsedBody() does not show ({@see RequestView::hiddenBodyParameters()}): a hidden
+ * value under the name PHP gives its parameter, so an exclusion of that parameter covers it,
+ * and a name PHP rewrites as it was written.
  */
 final readonly class ArgsCollector implements VariableCollectorInterface
 {
+    /**
+     * @param bool $inspectBodiesWithoutContentType Whether a body for which no reading names a content type
+     *                                              is read as a form; see
+     *                                              {@see \Flowd\PhirewallPresetOwaspCrs\Engine\CoreRuleSet::inspectBodiesWithoutContentType()}.
+     */
+    public function __construct(
+        private bool $inspectBodiesWithoutContentType = true,
+    ) {
+    }
+
     /** @return list<array{name: ?string, value: string, isNameEntry?: bool}> */
-    public function collect(ServerRequestInterface $serverRequest): array
+    public function collect(ServerRequestInterface $serverRequest, ?RequestView $requestView = null): array
     {
         /** @var list<array{name: ?string, value: string, isNameEntry?: bool}> $collected */
         $collected = [];
 
-        $this->collectFrom($serverRequest->getQueryParams(), $collected);
+        $requestView ??= RequestView::of($serverRequest);
+        $this->collectFrom($requestView->queryParameters(), $collected);
 
         $parsed = $serverRequest->getParsedBody();
         if (is_array($parsed)) {
             $this->collectFrom($parsed, $collected);
+        }
+
+        foreach ([...$requestView->hiddenQueryParameters(), ...$requestView->hiddenBodyParameters($serverRequest, $this->inspectBodiesWithoutContentType)] as $hidden) {
+            if ($hidden['value'] !== null) {
+                $collected[] = ['name' => $hidden['name'], 'value' => $hidden['value']];
+            }
+
+            if ($hidden['nameIsHidden']) {
+                $collected[] = ['name' => $hidden['name'], 'value' => $hidden['writtenName'], 'isNameEntry' => true];
+            }
         }
 
         return $collected;

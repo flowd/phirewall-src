@@ -138,6 +138,7 @@ Path kinds (and the path part of `REQUEST_REGEX`) match the normalised path, or 
 | `enableResponseHeaders()` | emit `X-Phirewall-*` headers |
 | `enableDiagnosticsHeaders()` | copy matcher-provided diagnostic headers onto blocked responses (`enableOwaspDiagnosticsHeader()` is a deprecated alias) |
 | `setFailOpen(bool)` | fail-open (default) vs fail-closed on backend errors |
+| `inspectServerParameters(bool)` | whether rules read the server parameters next to the PSR-7 request (default: yes), see [Two Readings of a Request](/features/safelists-blocklists#two-readings) |
 | `setKeyPrefix(prefix)` | cache-key prefix |
 
 ## Rules in a database

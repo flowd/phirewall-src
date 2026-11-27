@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Flowd\PhirewallPresetOwaspCrs\Engine\Variable;
 
+use Flowd\Phirewall\Http\RequestView;
 use Flowd\PhirewallPresetOwaspCrs\Engine\Transformation\TransformationPipeline;
 use Psr\Http\Message\ServerRequestInterface;
 
@@ -24,6 +25,12 @@ use Psr\Http\Message\ServerRequestInterface;
  * reports it so callers can fail closed rather than silently evaluating a partial value set —
  * silent truncation would otherwise let an attacker push a payload past the cap to evade a
  * rule targeting that same variable.
+ *
+ * The values come from the {@see RequestView} of the request: those of the PSR-7 request,
+ * then those of its server parameters the request does not hold. A query string, cookie
+ * header or form body with more parameters than the view reads (or a form body with more
+ * bytes) is un-inspectable in the same way, and the variables collected from it report
+ * {@see wasCapped()} too.
  */
 final class RequestVariableValues
 {
@@ -73,7 +80,14 @@ final class RequestVariableValues
 
     private readonly int $maxValuesPerCrsVariable;
 
+    private readonly RequestView $requestView;
+
     /**
+     * @param bool $inspectServerParameters False collects from the PSR-7 request alone; see
+     *                                      {@see \Flowd\PhirewallPresetOwaspCrs\Engine\CoreRuleSet::inspectServerParameters()}.
+     * @param bool $inspectBodiesWithoutContentType False reads a body as a form only when its content type says so; see
+     *                                              {@see \Flowd\PhirewallPresetOwaspCrs\Engine\CoreRuleSet::inspectBodiesWithoutContentType()}.
+     *
      * @throws \InvalidArgumentException When an explicit $maxValuesPerCrsVariable is not a positive
      *                                   integer. A non-positive cap would truncate every collected variable to (at most) nothing
      *                                   and mark it capped, making every deny rule fail closed — i.e. silently block all traffic.
@@ -81,6 +95,8 @@ final class RequestVariableValues
     public function __construct(
         private readonly ServerRequestInterface $serverRequest,
         ?int $maxValuesPerCrsVariable = null,
+        bool $inspectServerParameters = true,
+        private readonly bool $inspectBodiesWithoutContentType = true,
     ) {
         if ($maxValuesPerCrsVariable !== null && $maxValuesPerCrsVariable < 1) {
             throw new \InvalidArgumentException(
@@ -89,6 +105,7 @@ final class RequestVariableValues
         }
 
         $this->maxValuesPerCrsVariable = $maxValuesPerCrsVariable ?? self::defaultMaxValuesPerCrsVariable();
+        $this->requestView = $inspectServerParameters ? RequestView::of($serverRequest) : RequestView::ofPsr7Only($serverRequest);
     }
 
     /**
@@ -140,14 +157,23 @@ final class RequestVariableValues
             return $this->entriesByVariableName[$variableName];
         }
 
-        $collector = VariableCollectorFactory::create($variableName);
+        $collector = VariableCollectorFactory::create($variableName, $this->inspectBodiesWithoutContentType);
         if (!$collector instanceof VariableCollectorInterface) {
             return $this->entriesByVariableName[$variableName] = [];
         }
 
-        $collected = $collector->collect($this->serverRequest);
+        $collected = $collector->collect($this->serverRequest, $this->requestView);
         if (count($collected) > $this->maxValuesPerCrsVariable) {
             $collected = array_slice($collected, 0, $this->maxValuesPerCrsVariable);
+            $this->cappedVariables[$variableName] = true;
+        }
+
+        $complete = match ($variableName) {
+            'ARGS', 'ARGS_NAMES' => $this->requestView->queryParametersComplete() && $this->requestView->bodyParametersComplete($this->serverRequest, $this->inspectBodiesWithoutContentType),
+            'REQUEST_COOKIES', 'REQUEST_COOKIES_NAMES' => $this->requestView->cookiesComplete(),
+            default => true,
+        };
+        if (!$complete) {
             $this->cappedVariables[$variableName] = true;
         }
 

@@ -214,6 +214,8 @@ final readonly class Firewall
      */
     public function processRecordedSignal(RecordedSignal $recordedSignal, ServerRequestInterface $serverRequest): ?FirewallResult
     {
+        $serverRequest = RequestView::withServerParameterInspection($serverRequest, $this->config->inspectsServerParameters());
+
         return match ($recordedSignal->banType) {
             BanType::Fail2Ban => $this->processRecordedFail2BanSignal($recordedSignal, $serverRequest),
             BanType::Allow2Ban => $this->processRecordedAllow2BanSignal($recordedSignal, $serverRequest),
@@ -295,6 +297,11 @@ final readonly class Firewall
 
         $start = microtime(true);
         $context = $this->createContext();
+        // Asked here and not in RequestView: nearly every request says what the configuration says.
+        $inspect = $this->config->inspectsServerParameters();
+        if (($serverRequest->getAttribute(RequestView::INSPECT_SERVER_PARAMETERS_ATTRIBUTE, true) !== false) !== $inspect) {
+            $serverRequest = RequestView::withServerParameterInspection($serverRequest, $inspect);
+        }
 
         foreach ($this->evaluators as $evaluator) {
             $result = $evaluator->evaluate($serverRequest, $context);

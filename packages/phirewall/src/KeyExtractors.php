@@ -6,7 +6,9 @@ namespace Flowd\Phirewall;
 
 use Closure;
 use Flowd\Phirewall\Http\PathNormalizer;
+use Flowd\Phirewall\Http\RequestView;
 use Flowd\Phirewall\Http\TrustedProxyResolver;
+use Flowd\Phirewall\Matchers\Support\Readings;
 use Psr\Http\Message\ServerRequestInterface;
 
 /**
@@ -39,14 +41,15 @@ final class KeyExtractors
     }
 
     /**
-     * Extract normalized HTTP method (uppercase).
+     * Extract normalized HTTP method (uppercase): that of the PSR-7 request,
+     * `REQUEST_METHOD` when it has none.
      * @return Closure(ServerRequestInterface): ?string
      */
     public static function method(): Closure
     {
         return static function (ServerRequestInterface $serverRequest): ?string {
-            $method = $serverRequest->getMethod();
-            return $method === '' ? null : strtoupper($method);
+            $method = Readings::first(RequestView::of($serverRequest)->methods());
+            return $method === null ? null : strtoupper($method);
         };
     }
 
@@ -67,8 +70,10 @@ final class KeyExtractors
 
     /**
      * Extract a header value by name via PSR-7 getHeaderLine(), so repeated header lines are
-     * joined with commas (not just the first value). Returns null when the header is absent or
-     * present but empty.
+     * joined with commas (not just the first value). When the PSR-7 request has no such header
+     * (its library dropped a value it does not accept), the value of the server parameters is
+     * the key ({@see RequestView::headerLines()}). Returns null when the header is absent or
+     * present but empty in both.
      *
      * A null key skips the rule entirely: a throttle / fail2ban / allow2ban rule keyed on a
      * header does NOT apply to a request that omits the header, so an unauthenticated client can
@@ -85,10 +90,7 @@ final class KeyExtractors
      */
     public static function header(string $name): Closure
     {
-        return static function (ServerRequestInterface $serverRequest) use ($name): ?string {
-            $value = $serverRequest->getHeaderLine($name);
-            return $value === '' ? null : $value;
-        };
+        return static fn(ServerRequestInterface $serverRequest): ?string => Readings::first(RequestView::of($serverRequest)->headerLines($name));
     }
 
     /**
@@ -111,8 +113,8 @@ final class KeyExtractors
     public static function hashedHeader(string $name): Closure
     {
         return static function (ServerRequestInterface $serverRequest) use ($name): ?string {
-            $value = $serverRequest->getHeaderLine($name);
-            return $value === '' ? null : hash('sha256', $value);
+            $value = Readings::first(RequestView::of($serverRequest)->headerLines($name));
+            return $value === null ? null : hash('sha256', $value);
         };
     }
 

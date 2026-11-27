@@ -25,7 +25,11 @@ final class IpListGrowthBench
 {
     private Firewall $firewall;
 
-    private ServerRequestInterface $serverRequest;
+    /** @var list<ServerRequestInterface> */
+    private array $pageViews;
+
+    /** Which of the unseen requests the next call takes, see {@see Requests::unseen()}. */
+    private int $call = 0;
 
     /**
      * @return iterable<string, array{list<string>}>
@@ -47,9 +51,9 @@ final class IpListGrowthBench
         $config->blocklists->ip('networks', $networks);
 
         $this->firewall = new Firewall($config);
-        $this->serverRequest = Requests::pageView();
+        $this->pageViews = Requests::unseen(Requests::pageView(...));
 
-        Outcome::mustPass($this->firewall->decide($this->serverRequest));
+        Outcome::mustPass($this->firewall->decide(Requests::pageView()));
     }
 
     /**
@@ -62,6 +66,6 @@ final class IpListGrowthBench
     #[Constant('networks')]
     public function benchUnlistedClientInAWorker(array $networks): void
     {
-        $this->firewall->decide($this->serverRequest);
+        $this->firewall->decide($this->pageViews[$this->call++]);
     }
 }

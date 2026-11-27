@@ -29,7 +29,11 @@ final class IpListBench
 
     private Firewall $firewall;
 
-    private ServerRequestInterface $serverRequest;
+    /** @var list<ServerRequestInterface> */
+    private array $pageViews;
+
+    /** Which of the unseen requests the next call takes, see {@see Requests::unseen()}. */
+    private int $call = 0;
 
     /** @var list<string> */
     private array $networks;
@@ -44,17 +48,17 @@ final class IpListBench
         PhpFpm::requireOpcache();
 
         $this->networks = Networks::privateNetworks(self::NETWORKS);
-        $this->serverRequest = Requests::pageView();
+        $this->pageViews = Requests::unseen(Requests::pageView(...));
         $this->firewall = new Firewall($this->config(null));
 
-        Outcome::mustPass($this->firewall->decide($this->serverRequest));
-        Outcome::mustPass((new Firewall($this->config($this->compiledDataCache())))->decide($this->serverRequest));
+        Outcome::mustPass($this->firewall->decide(Requests::pageView()));
+        Outcome::mustPass((new Firewall($this->config($this->compiledDataCache())))->decide(Requests::pageView()));
     }
 
     #[Expected(instructions: '29.13K', cycles: '41.24K', memory: '1.047KiB')]
     public function benchUnlistedClientInAWorker(): void
     {
-        $this->firewall->decide($this->serverRequest);
+        $this->firewall->decide($this->pageViews[$this->call++]);
     }
 
     /** The list is parsed on every request. */
@@ -63,7 +67,7 @@ final class IpListBench
     {
         $this->meter->exclude(PhpFpm::startRequest(...));
 
-        (new Firewall($this->config(null)))->decide($this->serverRequest);
+        (new Firewall($this->config(null)))->decide($this->pageViews[$this->call++]);
     }
 
     /** The parsed list comes from the compiled-data cache. */
@@ -72,7 +76,7 @@ final class IpListBench
     {
         $this->meter->exclude(PhpFpm::startRequest(...));
 
-        (new Firewall($this->config($this->compiledDataCache())))->decide($this->serverRequest);
+        (new Firewall($this->config($this->compiledDataCache())))->decide($this->pageViews[$this->call++]);
     }
 
     private function config(?CompiledDataCache $compiledDataCache): Config

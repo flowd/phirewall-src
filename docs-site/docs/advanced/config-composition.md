@@ -36,7 +36,7 @@ Overlays are applied left to right, so **later sources win**.
 | **Rules** (safelists, blocklists, throttles, fail2ban, allow2ban, tracks) | Merged **by name** within each section. A later same-named rule **replaces** the earlier one in place (base ordering preserved); genuinely new names are appended. A union, never duplicates. |
 | **Pattern backends** | Merged by name with the same later-wins rule. |
 | **`enabled`** | **Last layer wins (fail-safe)**: the composed value is the `enabled` state of the highest-priority (last) layer. An explicit `enable()` / `disable()` / `setEnabled()` on the winning layer always takes effect, so an ambiguous composition is never left silently disabled. |
-| **Other scalar / object options** (`keyPrefix`, `failOpen`, the response-header toggles, the IP resolver, the discriminator normalizer, the response factories) | **Last explicit value wins**: the value comes from the last layer whose value differs from the field default. A layer that left an option at its default never clobbers an explicit choice from an earlier layer. |
+| **Other scalar / object options** (`keyPrefix`, `failOpen`, `inspectServerParameters`, the response-header toggles, the IP resolver, the discriminator normalizer, the response factories) | **Last explicit value wins**: the value comes from the last layer whose value differs from the field default. A layer that left an option at its default never clobbers an explicit choice from an earlier layer. |
 | **Infrastructure** (PSR-16 cache, PSR-14 event dispatcher, clock) | Inherited from the **base** layer; overlays do not override it. |
 
 ### Why "last explicit value wins"?

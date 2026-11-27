@@ -86,6 +86,9 @@ final class Config implements ConfigLayer
     /** Replace the handler response with the blocked response when a post-handler signal bans. */
     private bool $blockOnSignalBanEnabled = false;
 
+    /** Rules read the server parameters of a request next to its PSR-7 values. */
+    private bool $inspectServerParameters = true;
+
     private ?CompiledDataCache $compiledDataCache = null;
 
     public function __construct(
@@ -127,7 +130,7 @@ final class Config implements ConfigLayer
      *    takes effect. This is deliberately fail-safe — a firewall must never be
      *    left silently disabled just because a higher-priority layer happened to
      *    hold the default value.
-     *  - **Other scalar / object options** (failOpen, keyPrefix, the response
+     *  - **Other scalar / object options** (failOpen, inspectServerParameters, keyPrefix, the response
      *    header toggles, the IP resolver, the discriminator normalizer and the
      *    response factories) follow a "last explicit value wins" rule: the value
      *    is taken from the LAST layer whose value differs from the field default.
@@ -215,6 +218,7 @@ final class Config implements ConfigLayer
         $composed->enableDiagnosticsHeaders($this->lastExplicit(array_map(static fn(self $layer): bool => $layer->diagnosticsHeadersEnabled, $layers), false));
         $composed->enableResponseHeaders($this->lastExplicit(array_map(static fn(self $layer): bool => $layer->responseHeadersEnabled, $layers), false));
         $composed->enableBlockOnSignalBan($this->lastExplicit(array_map(static fn(self $layer): bool => $layer->blockOnSignalBanEnabled, $layers), false));
+        $composed->inspectServerParameters($this->lastExplicit(array_map(static fn(self $layer): bool => $layer->inspectServerParameters, $layers), true));
         $composed->setKeyPrefix($this->lastExplicit(array_map(static fn(self $layer): string => $layer->keyPrefix, $layers), 'phirewall'));
 
         $ipResolver = $this->lastExplicit(array_map(static fn(self $layer): ?\Closure => $layer->ipResolver, $layers), null);
@@ -499,6 +503,36 @@ final class Config implements ConfigLayer
     public function blockOnSignalBanEnabled(): bool
     {
         return $this->blockOnSignalBanEnabled;
+    }
+
+    /**
+     * Whether the rules read the server parameters of a request
+     * (`getServerParams()`: `REQUEST_METHOD`, `REQUEST_URI`, `QUERY_STRING`,
+     * `HTTP_*`) next to its PSR-7 values. On by default.
+     *
+     * The application behind the firewall can read either, and they differ
+     * when the PSR-7 library dropped or rewrote a value or a middleware in
+     * front of the firewall changed the request. A rule that restricts
+     * (blocklist, throttle scope, fail2ban/allow2ban filter, track) matches
+     * when one reading matches, a safelist only when every reading does; see
+     * {@see Http\RequestView}. A counter key and the forwarding chain of
+     * {@see Http\TrustedProxyResolver} are taken from the PSR-7 request, and
+     * from the server parameters when the PSR-7 request has no such header.
+     *
+     * Turn it off when a middleware in front of the firewall rewrites the
+     * request on purpose (a path prefix it strips, a method it overrides) and
+     * the rules are written for the rewritten request alone. The rules then
+     * read the PSR-7 request only, the OWASP rules included.
+     */
+    public function inspectServerParameters(bool $inspect = true): self
+    {
+        $this->inspectServerParameters = $inspect;
+        return $this;
+    }
+
+    public function inspectsServerParameters(): bool
+    {
+        return $this->inspectServerParameters;
     }
 
     /**

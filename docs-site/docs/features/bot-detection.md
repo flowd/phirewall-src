@@ -12,7 +12,7 @@ The companion package [`flowd/phirewall-preset-bots`](/features/bot-presets) shi
 
 ## Known Scanner Blocking
 
-The `knownScanners()` method blocks requests whose User-Agent matches known attack tools and vulnerability scanners. It ships with a curated default list covering 24 tools (26 substring patterns, since Burp Suite and Metasploit each have two spellings).
+The `knownScanners()` method blocks requests whose User-Agent matches known attack tools and vulnerability scanners. It ships with a curated default list covering 24 tools (26 substring patterns, since Burp Suite and Metasploit each have two spellings). It reads the `User-Agent` header in [both readings of the request](/features/safelists-blocklists#two-readings), so a User-Agent the PSR-7 library dropped is still matched.
 
 ### Quick Setup
 
