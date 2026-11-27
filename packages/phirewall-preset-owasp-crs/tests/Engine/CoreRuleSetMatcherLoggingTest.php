@@ -9,6 +9,7 @@ use Flowd\PhirewallPresetOwaspCrs\Engine\CoreRuleSet;
 use Flowd\PhirewallPresetOwaspCrs\Engine\CoreRuleSetMatcher;
 use Flowd\PhirewallPresetOwaspCrs\Engine\LogDataExpander;
 use Flowd\PhirewallPresetOwaspCrs\ParanoiaLevel;
+use Flowd\PhirewallPresetOwaspCrs\Tests\HostileServerRequest;
 use Flowd\PhirewallPresetOwaspCrs\Tests\TemporaryFiles;
 use Nyholm\Psr7\ServerRequest;
 use PHPUnit\Framework\TestCase;
@@ -110,8 +111,10 @@ final class CoreRuleSetMatcherLoggingTest extends TestCase
         $matcher = new CoreRuleSetMatcher(new CoreRuleSet([$this->sqliRule()]), logger: $logger);
 
         $forgingName = "q\r\n2099-01-01 CRITICAL forged-line";
-        $request = (new ServerRequest("GET\r\ninjected", "/search\r\ninjected"))
-            ->withQueryParams([$forgingName => '1 union select 2']);
+        // A strict PSR-7 implementation refuses the method, a lenient one passes it on.
+        $request = HostileServerRequest::from(
+            (new ServerRequest('GET', "/search\r\ninjected"))->withQueryParams([$forgingName => '1 union select 2']),
+        )->withRawMethod("GET\r\ninjected");
         $this->assertTrue($matcher->match($request)->isMatch());
 
         $context = $logger->records[0]['context'];

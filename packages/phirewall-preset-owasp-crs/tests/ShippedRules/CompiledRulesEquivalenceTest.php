@@ -110,23 +110,7 @@ final class CompiledRulesEquivalenceTest extends TestCase
     #[DataProvider('rulePayloads')]
     public function testRulePayloadsAreDecidedAlike(string $vector, string $payload): void
     {
-        $base = new ServerRequest('GET', 'https://example.test/');
-        $request = match (true) {
-            str_starts_with($vector, 'header:') => $base->withHeader(substr($vector, strlen('header:')), $payload),
-            str_starts_with($vector, 'cookie:') => $base->withCookieParams([substr($vector, strlen('cookie:')) => $payload]),
-            $vector === 'args' => $base->withQueryParams(['p' => $payload]),
-            $vector === 'args_names' => $base->withQueryParams([$payload => '1']),
-            $vector === 'body' => (new ServerRequest('POST', 'https://example.test/'))->withParsedBody(['p' => $payload]),
-            $vector === 'query_string' => new ServerRequest('GET', 'https://example.test/?' . $payload),
-            $vector === 'uri' => new ServerRequest('GET', 'https://example.test/' . ltrim($payload, '/')),
-            $vector === 'filename' => new ServerRequest('GET', 'https://example.test/' . ltrim(str_replace('?', '', $payload), '/')),
-            $vector === 'cookie' => $base->withCookieParams(['c' => $payload]),
-            $vector === 'header_referer' => $base->withHeader('Referer', $payload),
-            $vector === 'header_ua' => $base->withHeader('User-Agent', $payload),
-            $vector === 'header_content_type' => $base->withHeader('Content-Type', $payload),
-            $vector === 'method' => new ServerRequest($payload !== '' ? $payload : 'GET', 'https://example.test/'),
-            default => $base,
-        };
+        $request = EveryRulePayloadTest::buildRequest($vector, $payload);
 
         foreach ([1, 4] as $paranoiaLevel) {
             $this->assertSameDecision($request, $paranoiaLevel, 'payload');
