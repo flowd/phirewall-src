@@ -19,6 +19,7 @@ require is_file(__DIR__ . '/../vendor/autoload.php')
 use Flowd\PhirewallPresetOwaspCrs\Engine\CoreRule;
 use Flowd\PhirewallPresetOwaspCrs\Engine\CoreRuleSet;
 use Flowd\PhirewallPresetOwaspCrs\Engine\SecRuleLoader;
+use Flowd\PhirewallPresetOwaspCrs\Tests\HostileServerRequest;
 use Nyholm\Psr7\ServerRequest;
 
 mt_srand(1337); // deterministic output across runs
@@ -424,6 +425,54 @@ foreach (glob($rulesDir . '/*.data') ?: [] as $dataFile) {
 /** ------------------------------------------------------------------ Injection vectors */
 
 /**
+ * The header a header vector writes to, or null for any other vector.
+ */
+function headerOf(string $vector): ?string
+{
+    return match (true) {
+        str_starts_with($vector, 'header:') => substr($vector, strlen('header:')),
+        $vector === 'header_referer' => 'Referer',
+        $vector === 'header_ua' => 'User-Agent',
+        $vector === 'header_content_type' => 'Content-Type',
+        default => null,
+    };
+}
+
+/**
+ * Whether a strict PSR-7 implementation refuses to build the request for this
+ * vector and payload: a header value with a control character, or a method that
+ * is not an HTTP token. Decided here and not by the installed library, so the
+ * output does not depend on its version (nyholm/psr7 before 1.8.3 accepted a
+ * header value ending in a line break and any method).
+ */
+function refusedByStrictPsr7(string $vector, string $payload): bool
+{
+    $header = headerOf($vector);
+    if ($header !== null) {
+        return !HostileServerRequest::isHeaderValue($payload);
+    }
+
+    return $vector === 'method' && $payload !== '' && !HostileServerRequest::isMethodToken($payload);
+}
+
+/**
+ * Deliver a payload a strict PSR-7 implementation refuses through the test double,
+ * under a raw-* vector that says so in the fixtures.
+ *
+ * @return array{0: string, 1: Psr\Http\Message\ServerRequestInterface}
+ */
+function rawRequestFor(string $vector, string $payload): array
+{
+    $hostile = HostileServerRequest::from(new ServerRequest('GET', 'https://example.test/'));
+    $header = headerOf($vector);
+    if ($header !== null) {
+        return ['raw-header:' . $header, $hostile->withRawHeader($header, $payload)];
+    }
+
+    return ['raw-method', $hostile->withRawMethod($payload)];
+}
+
+/**
  * Build a request that places $payload into the variable the rule inspects.
  *
  * @return array{0: string, 1: Psr\Http\Message\ServerRequestInterface}
@@ -580,7 +629,8 @@ $manualOverrides = [
     // Empty-header rules (@rx ^$): the engine compiles @rx without PCRE_DOLLAR_ENDONLY (as
     // libmodsecurity v3 and Coraza do by default; ModSecurity v2 sets it), so $ matches before a
     // trailing newline and a lone-LF header value matches while surviving the empty-value skip
-    // (it is not === '').
+    // (it is not === ''). A strict PSR-7 implementation refuses that value, so it is delivered
+    // raw (raw-header:...); an empty value never reaches the rule.
     920290 => ['vector' => 'header:Host', 'payload' => "\n"],
     920330 => ['vector' => 'header_ua', 'payload' => "\n"],
     // OS command injection on the User-Agent; the sampler cannot reach a valid command
@@ -646,13 +696,29 @@ foreach ($ruleFiles as $ruleFile) {
             }
         }
 
+        // A payload a strict PSR-7 implementation refuses is tried raw only when no
+        // conforming request fires the rule.
+        $refused = [];
         foreach ($candidates as [$vector, $payload]) {
+            if (refusedByStrictPsr7($vector, $payload)) {
+                $refused[] = [$vector, $payload];
+                continue;
+            }
+
             try {
                 [$usedVector, $request] = requestFor($vector, $payload);
             } catch (InvalidArgumentException) {
-                continue; // payload not placeable in this vector (e.g. control chars in a header)
+                continue; // payload not placeable in this vector
             }
 
+            if ($isolated->evaluate($request, anomalyThreshold: 1)->matchedRuleIds() === [$id]) {
+                $matched = ['vector' => $usedVector, 'payload' => $payload];
+                break;
+            }
+        }
+
+        foreach ($matched === null ? $refused : [] as [$vector, $payload]) {
+            [$usedVector, $request] = rawRequestFor($vector, $payload);
             if ($isolated->evaluate($request, anomalyThreshold: 1)->matchedRuleIds() === [$id]) {
                 $matched = ['vector' => $usedVector, 'payload' => $payload];
                 break;
@@ -682,6 +748,11 @@ $export = "<?php\n\ndeclare(strict_types=1);\n\n"
     . " * Payloads are base64-encoded because many contain control or non-UTF-8 bytes\n"
     . " * that must not sit raw in PHP source. 'unreachable' lists rules that cannot be\n"
     . " * triggered through a normalized PSR-7 request, with the reason.\n"
+    . " *\n"
+    . " * A raw-header:<NAME> or raw-method vector marks a rule that only a request a\n"
+    . " * strict PSR-7 implementation refuses to build can trigger (a control character\n"
+    . " * in a header value, a method that is not an HTTP token); the tests deliver it\n"
+    . " * through Tests\\HostileServerRequest.\n"
     . " *\n"
     . " * Do not edit by hand; regenerate after an import.\n"
     . " *\n"

@@ -8,6 +8,7 @@ use Flowd\PhirewallPresetOwaspCrs\Engine\CoreRule;
 use Flowd\PhirewallPresetOwaspCrs\Engine\CoreRuleSet;
 use Flowd\PhirewallPresetOwaspCrs\ParanoiaLevel;
 use Flowd\PhirewallPresetOwaspCrs\Presets;
+use Flowd\PhirewallPresetOwaspCrs\Tests\HostileServerRequest;
 use Nyholm\Psr7\ServerRequest;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -127,15 +128,48 @@ final class EveryRulePayloadTest extends TestCase
     }
 
     /**
+     * A payload goes through a raw-* vector only where no request a strict PSR-7
+     * implementation builds can carry it, and every other header or method payload
+     * is one such an implementation accepts. So the fixtures neither depend on a
+     * lenient library version nor claim a rule fires on a conforming request when
+     * it only fires on a hostile one.
+     */
+    public function testRawVectorsCarryOnlyPayloadsAStrictPsr7RequestRefuses(): void
+    {
+        foreach (self::fixtures()['payloads'] as $id => $entry) {
+            $payload = (string) base64_decode($entry['payload_base64'], true);
+            $vector = $entry['vector'];
+
+            $refusedByStrictPsr7 = match (true) {
+                str_starts_with($vector, 'header') || str_starts_with($vector, 'raw-header:') => !HostileServerRequest::isHeaderValue($payload),
+                $vector === 'method' || $vector === 'raw-method' => !HostileServerRequest::isMethodToken($payload),
+                default => false,
+            };
+
+            $this->assertSame(str_starts_with($vector, 'raw-'), $refusedByStrictPsr7, sprintf('Rule %d, vector %s', $id, $vector));
+        }
+    }
+
+    /**
      * Build the request for a payload's injection vector. Must mirror
      * {@see requestFor()} in tools/generate-rule-payloads.php so a fixture the
      * generator verified reproduces here; the named-header vectors in particular
      * (`header:<NAME>`, `header_content_type`) exist only for kept header rules.
-     * Shared with {@see NewlineInsertionTest}.
+     * A `raw-header:<NAME>` or `raw-method` vector carries a value a strict PSR-7
+     * implementation refuses; {@see HostileServerRequest} delivers it.
+     * Shared with {@see NewlineInsertionTest} and {@see CompiledRulesEquivalenceTest}.
      */
     public static function buildRequest(string $vector, string $payload): ServerRequestInterface
     {
         $base = new ServerRequest('GET', 'https://example.test/');
+
+        if (str_starts_with($vector, 'raw-header:')) {
+            return HostileServerRequest::from($base)->withRawHeader(substr($vector, strlen('raw-header:')), $payload);
+        }
+
+        if ($vector === 'raw-method') {
+            return HostileServerRequest::from($base)->withRawMethod($payload);
+        }
 
         if (str_starts_with($vector, 'header:')) {
             return $base->withHeader(substr($vector, strlen('header:')), $payload);
